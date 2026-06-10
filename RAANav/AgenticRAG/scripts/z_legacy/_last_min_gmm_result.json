@@ -1,0 +1,414 @@
+{
+  "target": "umbrella_stand",
+  "Robj_scores(with Agent Predict)": {
+    "sofa": 0.72,
+    "coffee_table": 0.67,
+    "side_table": 0.67,
+    "door": 0.65,
+    "entryway": 0.62,
+    "tv_stand": 0.61,
+    "plant": 0.59,
+    "coat_rack": 0.58,
+    "hallway": 0.58,
+    "shoe_rack": 0.54
+  },
+  "filtered_scores(only Real Labels)": {
+    "sofa": 0.72,
+    "coffee_table": 0.67,
+    "side_table": 0.67,
+    "tv_stand": 0.61,
+    "plant": 0.59
+  },
+  "targets_from_clip": [
+    {
+      "obj_id": "umbrella_stand_2_R3",
+      "score": 1.000000238418579
+    },
+    {
+      "obj_id": "umbrella_stand_1_R3",
+      "score": 1.000000238418579
+    }
+  ],
+  "related_obj_by_target(All, combined R_objs&agentR)": {
+    "umbrella_stand_2_R3": [
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "sofa",
+        "obj_id": "sofa_1_R1",
+        "Rscore": 0.72,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.6363
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "coffee_table",
+        "obj_id": "coffee_table_2_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.85,
+        "N_obj": 1,
+        "GMM_score": 0.5593
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "coffee_table",
+        "obj_id": "coffee_table_1_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.85,
+        "N_obj": 2,
+        "GMM_score": 0.5593
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "side_table",
+        "obj_id": "side_table_1_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.7,
+        "N_obj": 1,
+        "GMM_score": 0.4606
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "tv_stand",
+        "obj_id": "tv_stand_1_R1",
+        "Rscore": 0.61,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.5391
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "plant",
+        "obj_id": "plant_2_R1",
+        "Rscore": 0.59,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.8,
+        "N_obj": 1,
+        "GMM_score": 0.4635
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "plant",
+        "obj_id": "plant_1_R1",
+        "Rscore": 0.59,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.8,
+        "N_obj": 2,
+        "GMM_score": 0.4635
+      },
+      {
+        "target_id": "umbrella_stand_2_R3",
+        "label": "shoe_cabinet",
+        "obj_id": "shoe_cabinet_1_R3",
+        "Rscore": 0.0,
+        "Rcfd": 0.55,
+        "Nr_over_N": 1.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.0128
+      }
+    ],
+    "umbrella_stand_1_R3": [
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "sofa",
+        "obj_id": "sofa_1_R1",
+        "Rscore": 0.72,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.6173
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "coffee_table",
+        "obj_id": "coffee_table_2_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.85,
+        "N_obj": 1,
+        "GMM_score": 0.5425
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "coffee_table",
+        "obj_id": "coffee_table_1_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.85,
+        "N_obj": 2,
+        "GMM_score": 0.5425
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "side_table",
+        "obj_id": "side_table_1_R1",
+        "Rscore": 0.67,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.7,
+        "N_obj": 1,
+        "GMM_score": 0.4468
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "tv_stand",
+        "obj_id": "tv_stand_1_R1",
+        "Rscore": 0.61,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.523
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "plant",
+        "obj_id": "plant_2_R1",
+        "Rscore": 0.59,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.8,
+        "N_obj": 1,
+        "GMM_score": 0.4496
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "plant",
+        "obj_id": "plant_1_R1",
+        "Rscore": 0.59,
+        "Rcfd": 0.0,
+        "Nr_over_N": 0.0,
+        "stability": 0.8,
+        "N_obj": 2,
+        "GMM_score": 0.4496
+      },
+      {
+        "target_id": "umbrella_stand_1_R3",
+        "label": "shoe_cabinet",
+        "obj_id": "shoe_cabinet_1_R3",
+        "Rscore": 0.0,
+        "Rcfd": 0.58,
+        "Nr_over_N": 1.0,
+        "stability": 0.9,
+        "N_obj": 3,
+        "GMM_score": 0.0344
+      }
+    ]
+  },
+  "related_obj": [
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "sofa",
+      "obj_id": "sofa_1_R1",
+      "Rscore": 0.72,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.6363
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "coffee_table",
+      "obj_id": "coffee_table_2_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.85,
+      "N_obj": 1,
+      "GMM_score": 0.5593
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "coffee_table",
+      "obj_id": "coffee_table_1_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.85,
+      "N_obj": 2,
+      "GMM_score": 0.5593
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "side_table",
+      "obj_id": "side_table_1_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.7,
+      "N_obj": 1,
+      "GMM_score": 0.4606
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "tv_stand",
+      "obj_id": "tv_stand_1_R1",
+      "Rscore": 0.61,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.5391
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "plant",
+      "obj_id": "plant_2_R1",
+      "Rscore": 0.59,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.8,
+      "N_obj": 1,
+      "GMM_score": 0.4635
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "plant",
+      "obj_id": "plant_1_R1",
+      "Rscore": 0.59,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.8,
+      "N_obj": 2,
+      "GMM_score": 0.4635
+    },
+    {
+      "target_id": "umbrella_stand_2_R3",
+      "label": "shoe_cabinet",
+      "obj_id": "shoe_cabinet_1_R3",
+      "Rscore": 0.0,
+      "Rcfd": 0.55,
+      "Nr_over_N": 1.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.0128
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "sofa",
+      "obj_id": "sofa_1_R1",
+      "Rscore": 0.72,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.6173
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "coffee_table",
+      "obj_id": "coffee_table_2_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.85,
+      "N_obj": 1,
+      "GMM_score": 0.5425
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "coffee_table",
+      "obj_id": "coffee_table_1_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.85,
+      "N_obj": 2,
+      "GMM_score": 0.5425
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "side_table",
+      "obj_id": "side_table_1_R1",
+      "Rscore": 0.67,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.7,
+      "N_obj": 1,
+      "GMM_score": 0.4468
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "tv_stand",
+      "obj_id": "tv_stand_1_R1",
+      "Rscore": 0.61,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.523
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "plant",
+      "obj_id": "plant_2_R1",
+      "Rscore": 0.59,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.8,
+      "N_obj": 1,
+      "GMM_score": 0.4496
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "plant",
+      "obj_id": "plant_1_R1",
+      "Rscore": 0.59,
+      "Rcfd": 0.0,
+      "Nr_over_N": 0.0,
+      "stability": 0.8,
+      "N_obj": 2,
+      "GMM_score": 0.4496
+    },
+    {
+      "target_id": "umbrella_stand_1_R3",
+      "label": "shoe_cabinet",
+      "obj_id": "shoe_cabinet_1_R3",
+      "Rscore": 0.0,
+      "Rcfd": 0.58,
+      "Nr_over_N": 1.0,
+      "stability": 0.9,
+      "N_obj": 3,
+      "GMM_score": 0.0344
+    }
+  ],
+  "targets_self": [
+    {
+      "obj_id": "umbrella_stand_2_R3",
+      "GMM_self_score": 0.0347
+    },
+    {
+      "obj_id": "umbrella_stand_1_R3",
+      "GMM_self_score": 0.0882
+    }
+  ],
+  "GMM_scores(Target&Related)": {
+    "sofa_1_R1": 0.6268,
+    "coffee_table_2_R1": 0.5509,
+    "coffee_table_1_R1": 0.5509,
+    "side_table_1_R1": 0.4537,
+    "tv_stand_1_R1": 0.5311,
+    "plant_2_R1": 0.4566,
+    "plant_1_R1": 0.4566,
+    "shoe_cabinet_1_R3": 0.0236,
+    "umbrella_stand_2_R3": 0.0347,
+    "umbrella_stand_1_R3": 0.0882
+  }
+}

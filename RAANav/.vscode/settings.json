@@ -1,0 +1,4 @@
+{
+    "ROS2.distro": "noetic",
+    "cmake.sourceDirectory": "/home/adminer/agentRAG/osmAG-LLM/fetch_nav"
+}

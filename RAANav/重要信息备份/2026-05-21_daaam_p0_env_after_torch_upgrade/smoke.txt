@@ -1,0 +1,9 @@
+torch 2.8.0+cu128 12.8
+torchvision 0.23.0+cu128
+numpy 1.26.4
+cv2 4.11.0 /home/adminer/miniconda3/envs/daaam_p0/lib/python3.10/site-packages/cv2/__init__.py
+ultralytics 8.4.47
+boxmot 11.0.8
+open_clip 3.3.0
+cuda True NVIDIA GeForce RTX 5060 Ti (12, 0)
+kernel_ok 9.374180793762207

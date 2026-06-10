@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import math
+import re
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def agentic_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def as_path(path: Union[str, Path], base: Optional[Path] = None) -> Path:
+    p = Path(path)
+    if p.is_absolute():
+        return p
+    return (base or repo_root()) / p
+
+
+def read_json(path: Union[str, Path]) -> Dict[str, Any]:
+    import json
+
+    p = as_path(path)
+    with p.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root must be an object: {p}")
+    return data
+
+
+def write_json(path: Union[str, Path], data: Any) -> None:
+    import json
+
+    p = as_path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def normalize_label(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.replace("\\", "/").split("/")[-1]
+    text = text.lower().replace("-", "_").replace(" ", "_")
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    text = re.sub(r"_?4k$", "", text)
+    text = re.sub(r"_?object_config$", "", text)
+    return text
+
+
+def object_stem(obj: Dict[str, Any]) -> str:
+    model_id = obj.get("model_id")
+    if model_id:
+        return normalize_label(model_id)
+    return normalize_label(obj.get("name", obj.get("id", "object")))
+
+
+def position_2d(obj: Dict[str, Any]) -> Optional[List[float]]:
+    pos = obj.get("position")
+    if not isinstance(pos, list) or len(pos) < 3:
+        return None
+    try:
+        return [float(pos[0]), float(pos[2])]
+    except Exception:
+        return None
+
+
+def euclidean_2d(a: Iterable[float], b: Iterable[float]) -> float:
+    av = list(a)
+    bv = list(b)
+    return math.sqrt((float(av[0]) - float(bv[0])) ** 2 + (float(av[1]) - float(bv[1])) ** 2)
+
+
+def euclidean_pose(a: Any, b: Any) -> float:
+    return math.sqrt((float(a.x) - float(b.x)) ** 2 + (float(a.y) - float(b.y)) ** 2 + (float(a.z) - float(b.z)) ** 2)
+
+
+def token_overlap(a: str, b: str) -> float:
+    at = {x for x in normalize_label(a).split("_") if x and x not in {"01", "02", "03", "4k"}}
+    bt = {x for x in normalize_label(b).split("_") if x and x not in {"01", "02", "03", "4k"}}
+    if not at or not bt:
+        return 0.0
+    return len(at & bt) / max(1, len(at | bt))
+
+
+def safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def bbox_from_object(obj: Dict[str, Any]) -> Dict[str, Any]:
+    pos = obj.get("position") if isinstance(obj.get("position"), list) else [0.0, 0.0, 0.0]
+    x, y, z = (safe_float(pos[0]), safe_float(pos[1]), safe_float(pos[2]))
+    profile = obj.get("object_profile") or {}
+    fx = safe_float(profile.get("footprint_x"), 0.0)
+    fz = safe_float(profile.get("footprint_z"), 0.0)
+    radius = safe_float(profile.get("radius"), safe_float(obj.get("placement_radius"), 0.25))
+    if fx <= 0:
+        fx = max(0.05, 2.0 * radius)
+    if fz <= 0:
+        fz = max(0.05, 2.0 * radius)
+    height = safe_float(profile.get("height"), 0.0)
+    if height <= 0:
+        height = max(0.05, safe_float(profile.get("y_offset"), safe_float(obj.get("placement_y_offset"), 0.1)) * 2.0)
+    mn = [x - fx / 2.0, y, z - fz / 2.0]
+    mx = [x + fx / 2.0, y + height, z + fz / 2.0]
+    return {
+        "min": [round(v, 4) for v in mn],
+        "max": [round(v, 4) for v in mx],
+        "center": [round(x, 4), round(y + height / 2.0, 4), round(z, 4)],
+        "size": [round(fx, 4), round(height, 4), round(fz, 4)],
+    }
+
+
+def footprint_region(obj: Dict[str, Any]) -> List[Dict[str, float]]:
+    bbox = bbox_from_object(obj)
+    mn = bbox["min"]
+    mx = bbox["max"]
+    return [
+        {"x": mn[0], "y": mn[2]},
+        {"x": mx[0], "y": mn[2]},
+        {"x": mx[0], "y": mx[2]},
+        {"x": mn[0], "y": mx[2]},
+    ]

@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+
+# Common build / packaging
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+
+# Logs / runs
+wandb/
+runs/
+logs/
+
+# Large data / backups (keep code, ignore heavy artifacts)
+experiment_data/
+AgenticRAG/RAG_Graph/
+AgenticRAG/deep_explore_v3/
+AgenticRAG/output_v3*/
+AgenticRAG/task_output/
+AgenticRAG/legacy/
+
+# 参考开源代码 (23GB+, 只本地保留)
+参考开源代码/
+
+# HOV-SG: datasets, checkpoints, outputs
+HOV-SG/data/
+HOV-SG/checkpoints/
+HOV-SG/outputs/
+HOV-SG/output*/
+
+# AgenticRAG: generated outputs / indices
+AgenticRAG/CLIP_RAG/map_merged*/
+AgenticRAG/RAG_Graph/
+
+
+# z_legacy large files
+z_legacy/*.pkl
+z_legacy/*.json
+
+# Model/feature binaries
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.onnx
+*.npz
+*.npy
+
+# Image/video outputs (keep code, not generated frames)
+rgb_frames/
+*.mp4
+
+# Jupyter
+.ipynb_checkpoints/
+
+# env
+.env
+*.log
+
+# 独立git子仓库
+A_new_bench/
+z_legacy/try_new_bench/
+models/

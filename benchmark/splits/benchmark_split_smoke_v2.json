@@ -1,0 +1,18 @@
+{
+  "version": "smoke_v2",
+  "seed": 42,
+  "train_scenes": [],
+  "val_scenes": [
+    "00808-y9hTuugGdiq"
+  ],
+  "test_scenes": [],
+  "episode_count": 30,
+  "layout_count": 10,
+  "metadata": {
+    "episodes_root": "benchmark/episodes/smoke_v2",
+    "layout_manifests": [
+      "results/layouts/00808-y9hTuugGdiq/batch_20260521_051148/manifest.json"
+    ],
+    "images_dir": "objects_images"
+  }
+}

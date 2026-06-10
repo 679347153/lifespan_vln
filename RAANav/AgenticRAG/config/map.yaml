@@ -1,0 +1,182 @@
+# map.yaml - 场景图构建配置文件
+map_config:
+  map_history_dir: "path/to/map/history"
+  map_now_dir: "path/to/map/now"
+  map_merged_dir: "RAG_Graph/scene_build"
+  map_merged_json: "deep_explore_v3/00814-p53SfW6mjZe_semantic_map.json"
+  CLIP_RAG_map_dir: "RAG_Graph/scene_build/clip_index"
+  occupancy_grid_dir: "RAG_Graph/scene_build/occupancy_grid"
+
+# 虚拟时钟 (仿真闭环用)
+virtual_clock:
+  enabled: true
+  step_hours: 1.0                     # 每个仿真步骤推进的虚拟小时数
+  start: "2026-01-01T00:00:00Z"       # 虚拟起始时间
+
+# 物体更新合并相关参数
+object:
+  Rscore_max: 1.0 #NOTICE需要与下面的RscoreValue_max保持一致
+
+  RAG_score_max: 1.0
+
+  cfd_max: 1.0
+  # 物体置信度的范数
+  Rcfd_max: 1.0
+  # 物体相对置信度的范数，1 或者 0
+
+  epsilon_cfd: 0.75
+  # 记忆率，越低现在的比重越高
+  epsilon_Rcfd: 0.75
+  # R_cfd 的记忆率权重
+  epsilon_clip: 0.75
+  exist_recover_rate: 0.75
+  missing_decay: 0.80
+
+  imgs_description_append:
+    mode: sequential_totalN  # sequential_totalN | by_nowN (目前实现: 使用合并后总 N 作为键)
+    # sequential_totalN: 每次合并后使用新的累计 N 作为 key 追加 imgs/description
+    # by_nowN: (预留) 使用当前扫描内部自身 N 直接映射
+
+  region_threshold: 0.8
+  # 物体区域的阈值，超过这个值则认为是同一个物体 (仅用于 R_objs 内部匹配)
+
+  # --- 多因子匹配参数 (P1/P2) ---
+  match_dist_threshold: 1.0
+  # pos_3d 中心点距离阈值(米)，小于此值视为空间匹配
+  region_threshold_loose: 0.3
+  # 宽松 2D IoU 阈值，作为距离匹配的后备条件
+  clip_reject_threshold: 0.4
+  # CLIP 余弦相似度否决阈值，低于此值拒绝匹配 (轻量模式)
+  clip_match_threshold: 0.65
+  # CLIP 模式前置过滤阈值：cosine ≥ 此值才进入联合评分 (§3.1.1-A)
+
+  # --- §3.1 联合匹配评分系数 ---
+  match_eta1: 0.4
+  # 空间 IoU 权重
+  match_eta2: 0.4
+  # CLIP 外观余弦权重
+  match_eta3: 0.2
+  # 距离惩罚权重
+  match_tau: 0.55
+  # 联合匹配阈值 S_match > τ 视为同一实体
+  match_dist_norm: 3.0
+  # 距离归一化因子(米)，将距离映射到 [0,1] 范围
+
+  # --- 位置 EMA 参数 (P3) ---
+  pos_ema_alpha: 0.3
+  # pos_3d 指数移动平均的新观测权重 (0~1)，越大越偏向最新
+
+  create_map:
+    inflation_rate: 1.2
+    # 区域膨胀率
+    overlap_threshold: 0.05
+    # 对于杯子来说，他的膨胀区域太小了，所以阈值非常小
+
+# 地图更新安全阈值
+update:
+  room_shape:
+    iou_threshold: 0.90        # 房间多边形形状匹配的最小 IOU (低于即警告)
+    area_ratio_tolerance: 0.2  # 面积偏离容忍(±20%)；即 area_now/area_hist 在 [1/(1+0.2), 1+0.2] 视为正常
+
+# CLIP-RAG 相关参数
+CLIP_RAG:
+  consine_similarity_filmin: 0.95
+  # CLIP-RAG 相关参数
+
+  field_mode: label        # label|desc: 全局默认文本来源策略 (移除 auto)
+  batch_size: 32          # 默认批量编码大小 (可被命令行覆盖)
+  device: auto            # auto|cpu|cuda : auto = 优先 cuda 可用否则 cpu
+
+  text_embedding:
+    model_name: "openai/clip-vit-base-patch32"
+    max_length: 77
+  image_embedding:
+    model_name: "openai/clip-vit-base-patch32"
+    image_size: 224
+
+# agent Rscore相关参数
+agent_Rscore:
+  RscoreValue_max: 10.0
+  qwen_APIKEY: "sk-8d76e1d33b134dbab1a8c72b3de2346f"
+  #参考网站：https://bailian.console.aliyun.com/detail/qwen-max?apiKey=1&tab=doc#/doc/?type=model&url=2840914
+  model: "qwen-plus"
+  # --- §4.2 导航融合参数 ---
+  nav_enabled: true          # 是否在导航循环中启用 Agent 通道
+  nav_fusion_k: 0.35         # 动态融合衰减系数 k: w_agent(n) = max(w_min, exp(-k*n))
+  nav_fusion_w_min: 0.15     # Agent 权重下限
+  nav_query_interval: 2      # 每隔多少次 GMM 查询触发一次 Agent LLM 调用 (LLM较慢, 不必每次)
+  predict_loss_rate: 0.8   # OPTIMIZE 可以设计根据更新次数降低此参数的值，读取解释: 这是“保留系数(keep factor)”, predicted 对象最终分数 = base * predict_loss_rate; 0.8 表示保留80% 分数 (折损20%)
+  map_full_path: "NONE"  # 若为 "NONE" 则不加载历史地图, 只基于 id 与常识推理
+  real_top_k: 5
+  predict_top_k:  5   # 结果截断; 100 或 <=0 视为不限制
+  Rscore_min: 0.0     # 最小保留阈值; 0 或 <0 表示不限制
+  output_path: "CLIP_RAG/map_mergedALL__openai-clip-vit-base-patch32__20250821-155707__b2a67722/Rscores/{target}_Robj_score.json"  # 结果保存目录或文件；目录以 / 结尾或存在则自动写入 <target>_Rscore.json；若含 {target} 模板则格式化；若为 NONE 或空则不保存
+  merge_rate: 1.05
+  rag_score:
+    beta1: 0.65
+    beta2: 0.35
+    time_lambda: 0.20
+    kappa: 1.0
+    epsilon: 1.0e-8
+    min_cooccur_count: 1
+
+# GMM 相关参数
+GMM:
+  consine_similarity_filmin: 0.90
+
+  Score_max: 1.0
+
+  merge_rate: 1.0
+  
+  weight_mode: "Sigmoid"  # "" | "Exponential" | "Sigmoid"
+  Nr_lambda_param: 0.5 # TODO 暂时认为和Rcfd是50%的权重
+    # OPTIMIZE 动态权重函数参数 (用于后续 Rscore 组合或其它随 N 自适应的平滑)
+  weight_exponential:
+    a: 0.1    # 初始权重下限 (N=0)
+    b: 0.25    # 6次0.48，7次开始权重为0.575
+    # 公式: omega_N2 = clamp(a * exp(b * N), 0, 1); omega_N1 = 1 - omega_N2
+  weight_sigmoid:
+    k: 1.5    # S 型陡峭程度 (原1.0, 提升使曲线更陡)
+    N0: 1.0   # 1 次观测即获得0.5权重 (原5.0导致低N物体分数≈0)
+    # 公式: omega_N2 = 1 / (1 + exp(-k * (N - N0))); omega_N1 = 1 - omega_N2
+    # 原N0=5时: sigmoid(N=1)≈0.018, sigmoid(N=2)≈0.047 → 分数极低
+    # 新N0=1时: sigmoid(N=1)=0.5, sigmoid(N=2)≈0.82 → 合理分数
+  # 选用策略时可根据 N 自动从早期“探索”(偏历史) 过渡到“稳定”(偏最新)
+# ---------------------------------------------------------------------------
+# CLIP 视觉编码参数 (检测物体的 CLIP embedding 计算)
+# ---------------------------------------------------------------------------
+clip_visual:
+  mode: "mask_only"
+  # "mask_only": 仅用 masked crop 编码 (轻量, 默认, 任务模式推荐)
+  # "full":      masked crop + local crop 加权融合 (参考 HOV-SG, 深度探索推荐)
+  masked_weight: 0.75
+  # full 模式下 masked crop 的权重 (参考 DovSG=0.75, HOV-SG≈0.44)
+  bbox_padding: 20
+  # 裁剪 bbox 时的像素 padding
+  dedup_dist_threshold: 0.5
+  # 帧内去重: 同 label + pos_3d 欧氏距离 < 此值(米) → 合并
+
+# ---------------------------------------------------------------------------
+# 静态 stability 字典 (物体动态稳定性先验, 0=极易移动, 1=几乎不动)
+# 优先使用此字典, 缺失时回退到 default_stability
+# ---------------------------------------------------------------------------
+stability_priors:
+  config_path: "../config/stability_priors.yaml"
+
+# ---------------------------------------------------------------------------
+# 双模式架构参数 (§3.0)
+# ---------------------------------------------------------------------------
+exploration_mode:
+  deep:
+    pos_ema_alpha: 0.5
+    # 深度探索模式的 EMA 权重 (比任务模式更信任)
+    clip_mode: "full"
+    # 深度探索使用 full CLIP 编码
+    exist_prob_init: 1.0
+    # 深度探索产出物体的初始 exist_prob
+  task:
+    pos_ema_alpha: 0.3
+    # 任务模式的 EMA 权重 (标准增量)
+    clip_mode: "mask_only"
+    # 任务模式使用轻量 CLIP 编码
+    exist_prob_init: 1.0

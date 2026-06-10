@@ -1,0 +1,158 @@
+# ---------------------------------------------------------------------------
+# 静态 stability 字典 (物体动态稳定性先验, 0=极易移动, 1=几乎不动)
+# 优先使用此字典, 缺失时回退到 default_stability
+# ---------------------------------------------------------------------------
+stability_priors:
+  default: 0.5
+  # --- 高稳定 (≥0.9): 建筑固定/大型家电 ---
+  toilet: 0.95
+  bathtub: 0.95
+  sink: 0.95
+  refrigerator: 0.95
+  oven: 0.90
+  washer: 0.90
+  dryer: 0.90
+  fireplace: 0.95
+  counter: 0.90
+  shower: 0.95
+  # --- 中高稳定 (0.7-0.9): 大型家具 ---
+  bed: 0.85
+  sofa: 0.85
+  couch: 0.85
+  desk: 0.80
+  table: 0.80
+  dining table: 0.80
+  coffee table: 0.80
+  bookshelf: 0.85
+  shelf: 0.80
+  cabinet: 0.85
+  kitchen cabinet: 0.85
+  bathroom cabinet: 0.85
+  dresser: 0.85
+  wardrobe: 0.85
+  tv: 0.75
+  monitor: 0.70
+  microwave: 0.70
+  stove: 0.90
+  dishwasher: 0.90
+  # --- 中等稳定 (0.4-0.7): 中型家具/装饰 ---
+  chair: 0.65
+  dining chair: 0.65
+  stool: 0.60
+  lamp: 0.60
+  ceiling lamp: 0.90
+  bedside lamp: 0.60
+  plant: 0.55
+  mirror: 0.70
+  rug: 0.65
+  carpet: 0.65
+  mat: 0.55
+  curtain: 0.70
+  picture: 0.70
+  painting: 0.70
+  clock: 0.65
+  decoration: 0.60
+  statue: 0.55
+  rack: 0.65
+  # --- 低稳定 (0.2-0.4): 小型可移动物品 ---
+  pillow: 0.30
+  cushion: 0.35
+  vase: 0.35
+  towel: 0.25
+  bottle: 0.20
+  cup: 0.20
+  basket: 0.35
+  box: 0.30
+  bag: 0.15
+  shoe: 0.15
+  bowl: 0.25
+  book: 0.20
+  toy: 0.20
+  clothes: 0.15
+  hat: 0.10
+  jar: 0.25
+  broom: 0.30
+  bucket: 0.30
+  hanger: 0.20
+  bin: 0.40
+  speaker: 0.50
+  toaster: 0.55
+  coffee machine: 0.60
+
+# ---------------------------------------------------------------------------
+# GroundingDINO 检测标签集 (白名单)
+# 所有不在此集合中的检测结果将被丢弃
+# 来源: HM3D GT 场景语义标注中的常见非结构物体
+# ---------------------------------------------------------------------------
+detect_labels:
+  # 大型家具
+  - chair
+  - dining chair
+  - table
+  - dining table
+  - coffee table
+  - sofa
+  - couch
+  - bed
+  - desk
+  - shelf
+  - bookshelf
+  - cabinet
+  - kitchen cabinet
+  - dresser
+  - wardrobe
+  # 电器
+  - tv
+  - monitor
+  - lamp
+  - ceiling lamp
+  - refrigerator
+  - oven
+  - microwave
+  - washer
+  - dryer
+  - toaster
+  - coffee machine
+  - speaker
+  # 卫浴
+  - toilet
+  - sink
+  - bathtub
+  - shower
+  # 中型家具/装饰
+  - stool
+  - counter
+  - mirror
+  - curtain
+  - rug
+  - carpet
+  - mat
+  - plant
+  - picture
+  - painting
+  - clock
+  - decoration
+  - statue
+  - rack
+  - fireplace
+  # 小型物品
+  - pillow
+  - cushion
+  - vase
+  - towel
+  - bottle
+  - cup
+  - bowl
+  - basket
+  - box
+  - bag
+  - shoe
+  - book
+  - toy
+  - clothes
+  - hat
+  - jar
+  - broom
+  - bucket
+  - hanger
+  - bin

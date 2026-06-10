@@ -1,0 +1,14 @@
+
+# conda environments:
+#
+# * -> active
+# + -> frozen
+base                     /home/adminer/miniconda3
+agentrag                 /home/adminer/miniconda3/envs/agentrag
+droidenv                 /home/adminer/miniconda3/envs/droidenv
+goat                     /home/adminer/miniconda3/envs/goat
+mineru                   /home/adminer/miniconda3/envs/mineru
+sem-map                  /home/adminer/miniconda3/envs/sem-map
+vlfm                     /home/adminer/miniconda3/envs/vlfm
+vlfm-py39                /home/adminer/miniconda3/envs/vlfm-py39
+

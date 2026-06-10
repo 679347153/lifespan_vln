@@ -1,0 +1,61 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Class: rviz/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Reference Frame: map
+      Value: true
+    - Class: rviz/PointCloud2
+      Enabled: true
+      Name: FullPCD
+      Topic: /agentrag/full_pcd
+      Queue Size: 2
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: FlatColor
+      Color: 180; 180; 180
+      Alpha: 0.5
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Name: Rooms
+      Marker Topic: /agentrag/rooms
+      Queue Size: 2
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Name: Objects
+      Marker Topic: /agentrag/objects
+      Queue Size: 2
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 25; 25; 30
+    Fixed Frame: map
+  Name: root
+  Tools:
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+    - Class: rviz/FocusCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 12
+      Focal Point: 0; 0; 0
+      Name: Orbit
+      Pitch: 0.7
+      Yaw: 1.0
+Window Geometry:
+  Height: 900
+  Width: 1400

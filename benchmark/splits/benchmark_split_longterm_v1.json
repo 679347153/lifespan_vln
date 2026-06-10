@@ -1,0 +1,22 @@
+{
+  "version": "longterm_v1",
+  "seed": 42,
+  "train_scenes": [],
+  "val_scenes": [
+    "00808-y9hTuugGdiq",
+    "00803-k1cupFYWXJ6",
+    "00802-wcojb4TFT35"
+  ],
+  "test_scenes": [],
+  "episode_count": 150,
+  "layout_count": 30,
+  "metadata": {
+    "episodes_root": "benchmark/episodes/longterm_v1",
+    "layout_manifests": [
+      "results/layouts/00808-y9hTuugGdiq/batch_20260521_051148/manifest.json",
+      "results/layouts/00803-k1cupFYWXJ6/batch_20260521_075538/manifest.json",
+      "results/layouts/00802-wcojb4TFT35/batch_20260521_064646/manifest.json"
+    ],
+    "images_dir": "objects_images"
+  }
+}

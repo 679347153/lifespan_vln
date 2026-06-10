@@ -1,0 +1,83 @@
+
+     active environment : None
+            shell level : 0
+       user config file : /home/adminer/.condarc
+ populated config files : /home/adminer/miniconda3/.condarc
+                          /home/adminer/.condarc
+          conda version : 25.11.1
+    conda-build version : not installed
+         python version : 3.13.9.final.0
+                 solver : libmamba (default)
+       virtual packages : __archspec=1=skylake
+                          __conda=25.11.1=0
+                          __cuda=12.9=0
+                          __glibc=2.31=0
+                          __linux=5.15.0=0
+                          __unix=0=0
+       base environment : /home/adminer/miniconda3  (writable)
+      conda av data dir : /home/adminer/miniconda3/etc/conda
+  conda av metadata url : None
+           channel URLs : https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/linux-64
+                          https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/noarch
+                          https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/linux-64
+                          https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/noarch
+                          https://repo.anaconda.com/pkgs/main/linux-64
+                          https://repo.anaconda.com/pkgs/main/noarch
+                          https://repo.anaconda.com/pkgs/r/linux-64
+                          https://repo.anaconda.com/pkgs/r/noarch
+          package cache : /home/adminer/miniconda3/pkgs
+                          /home/adminer/.conda/pkgs
+       envs directories : /home/adminer/miniconda3/envs
+                          /home/adminer/.conda/envs
+               platform : linux-64
+             user-agent : conda/25.11.1 requests/2.32.5 CPython/3.13.9 Linux/5.15.0-139-generic ubuntu/20.04.6 glibc/2.31 solver/libmamba conda-libmamba-solver/25.4.0 libmambapy/2.4.0 aau/0.7.4 c/. s/. e/.
+                UID:GID : 1000:1000
+             netrc file : None
+           offline mode : False
+
+
+# conda environments:
+#
+# * -> active
+# + -> frozen
+base                     /home/adminer/miniconda3
+agentrag                 /home/adminer/miniconda3/envs/agentrag
+droidenv                 /home/adminer/miniconda3/envs/droidenv
+goat                     /home/adminer/miniconda3/envs/goat
+mineru                   /home/adminer/miniconda3/envs/mineru
+sem-map                  /home/adminer/miniconda3/envs/sem-map
+vlfm                     /home/adminer/miniconda3/envs/vlfm
+vlfm-py39                /home/adminer/miniconda3/envs/vlfm-py39
+
+sys.version: 3.13.9 | packaged by Anaconda, Inc. | (m...
+sys.prefix: /home/adminer/miniconda3
+sys.executable: /home/adminer/miniconda3/bin/python
+conda location: /home/adminer/miniconda3/lib/python3.13/site-packages/conda
+conda-build: None
+conda-content-trust: /home/adminer/miniconda3/bin/conda-content-trust
+conda-env: /home/adminer/miniconda3/bin/conda-env
+conda-token: /home/adminer/miniconda3/bin/conda-token
+user site dirs: ~/.local/lib/python3.8
+
+BUNDLED_DEBUGPY_PATH: /home/adminer/.vscode/extensions/ms-python.debugpy-2025.18.0-linux-x64/bundled/libs/debugpy
+CIO_TEST: <not set>
+CMAKE_PREFIX_PATH: /opt/ros/noetic
+CONDA_EXE: /home/adminer/miniconda3/bin/conda
+CONDA_PYTHON_EXE: /home/adminer/miniconda3/bin/python
+CONDA_ROOT: /home/adminer/miniconda3
+CONDA_SHLVL: 0
+CURL_CA_BUNDLE: <not set>
+DEFAULTS_PATH: /usr/share/gconf/ubuntu.default.path
+FONTCONFIG_PATH: /etc/fonts
+LD_LIBRARY_PATH: /opt/ros/noetic/lib:/opt/ros/noetic/lib/x86_64-linux-gnu::/usr/local/cuda-12.8/lib64
+LD_PRELOAD: <not set>
+MANDATORY_PATH: /usr/share/gconf/ubuntu.mandatory.path
+PATH: /home/adminer/seap_test/blender-5.0.1-linux-x64:/opt/ros/noetic/bin:/home/adminer/miniconda3/condabin:/home/adminer/.config/Code/User/globalStorage/github.copilot-chat/debugCommand:/home/adminer/.config/Code/User/globalStorage/github.copilot-chat/copilotCli:/home/adminer/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/home/adminer/.vscode/extensions/ms-python.debugpy-2025.18.0-linux-x64/bundled/scripts/noConfigScripts:/usr/local/cuda-12.8/bin
+PKG_CONFIG_PATH: /opt/ros/noetic/lib/pkgconfig:/opt/ros/noetic/lib/x86_64-linux-gnu/pkgconfig
+PYTHONPATH: /opt/ros/noetic/lib/python3/dist-packages
+PYTHONSTARTUP: /home/adminer/.config/Code/User/workspaceStorage/8fe9d68b175119b573442822ba13cda0/ms-python.python/pythonrc.py
+PYTHON_BASIC_REPL: 1
+REQUESTS_CA_BUNDLE: <not set>
+ROS_PACKAGE_PATH: /opt/ros/noetic/share
+SSL_CERT_FILE: <not set>
+WINDOWPATH: 2

@@ -1,0 +1,4 @@
+ERROR conda.cli.main_run:execute(127): `conda run python -m pip check` failed. (See above for error)
+salesforce-lavis 1.0.2 has requirement timm==0.4.12, but you have timm 1.0.25.
+decord 0.6.0 is not supported on this platform
+

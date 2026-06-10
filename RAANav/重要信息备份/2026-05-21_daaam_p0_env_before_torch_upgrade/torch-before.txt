@@ -1,0 +1,10 @@
+python 3.10.20 (main, Mar 11 2026, 17:46:40) [GCC 14.3.0]
+torch 2.5.0+cu124
+torch_cuda 12.4
+cuda_available True
+device NVIDIA GeForce RTX 5060 Ti
+kernel_error RuntimeError CUDA error: no kernel image is available for execution on the device
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

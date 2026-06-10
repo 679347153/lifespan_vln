@@ -1,0 +1,19 @@
+# 作者：Epoch
+# 系统：Ubuntu 20.04
+
+torch
+transformers
+# 我的显卡驱动是NVIDIA-SMI 535.261.03 CUDA Version: 12.2 
+# nvcc 显示的CUDA Toolkit版本是12.2.140
+pyyaml
+streamlit
+matplotlib
+networkx
+pandas
+plotly
+streamlit-plotly-events
+openai
+numpy
+httpx[socks]
+
+#hydra 注意，我的python 3.13hydra不支持！如果需要后面应换成3.6, 3.7 or 3.8

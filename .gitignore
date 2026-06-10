@@ -1,0 +1,45 @@
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+
+# HM3D scene assets
+*.glb
+*.semantic.glb
+*.navmesh
+*.semantic.txt
+
+
+*.object_config.json
+objects/
+*.gltf
+*.webp
+*.bin
+
+# Generated outputs
+scene_info_export/
+semantic_demo_output/
+hm3d_pipeline_report.json
+*_scene_info.json
+
+benchmark/episodes/
+benchmark/eval/
+benchmark/splits/
+!benchmark/splits/
+!benchmark/splits/benchmark_split_longterm_v1.json
+
+# Dataset/generated working data
+hm3d/
+results/layouts/
+results/probabilities/
+results/receptacle_queries/
+results/room_instances/
+results/object_instance_assignments/
+results/scene_info/
+
+*.pyc
+__pycache__/
+*.log

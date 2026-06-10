@@ -1,0 +1,12 @@
+==> /home/adminer/miniconda3/.condarc <==
+channels:
+  - defaults
+
+==> /home/adminer/.condarc <==
+auto_activate: False
+channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+  - defaults
+show_channel_urls: True
+

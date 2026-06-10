@@ -1,0 +1,10 @@
+{
+  "capture_counts": {
+    "rgb": 60,
+    "depth": 60,
+    "semantic": 60,
+    "pose": 60
+  },
+  "objects_history": 12,
+  "objects_merged": 12
+}
