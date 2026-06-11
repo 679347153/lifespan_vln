@@ -15,5 +15,7 @@ streamlit-plotly-events
 openai
 numpy
 httpx[socks]
+requests
+pillow
 
 #hydra 注意，我的python 3.13hydra不支持！如果需要后面应换成3.6, 3.7 or 3.8

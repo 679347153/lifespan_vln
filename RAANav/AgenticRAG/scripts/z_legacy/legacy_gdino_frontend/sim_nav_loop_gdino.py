@@ -1332,7 +1332,39 @@ def main():
                         help="开启实时可视化窗口 (OpenCV)")
     parser.add_argument("--no-navmesh", action="store_true",
                         help="禁用 GT navmesh, 使用纯深度构建栅格 + A*导航")
+    parser.add_argument("--perception-backend", choices=["local", "remote"], default=None,
+                        help="Perception backend: local or remote.")
+    parser.add_argument("--remote-vision-base-url", default=None,
+                        help="Local URL after a manual SSH tunnel, e.g. http://127.0.0.1:50220")
+    parser.add_argument("--remote-vision-use-ssh-tunnel", action="store_true",
+                        help="Start the SSH tunnel to the remote vision server automatically.")
+    parser.add_argument("--remote-vision-ssh-host", default=None)
+    parser.add_argument("--remote-vision-ssh-port", type=int, default=None)
+    parser.add_argument("--remote-vision-ssh-user", default=None)
+    parser.add_argument("--remote-vision-ssh-password", default=None)
+    parser.add_argument("--remote-vision-local-port", type=int, default=None)
+    parser.add_argument("--remote-vision-remote-port", type=int, default=None)
     args = parser.parse_args()
+
+    if args.perception_backend:
+        os.environ["RAANAV_PERCEPTION_BACKEND"] = args.perception_backend
+    if args.remote_vision_base_url:
+        os.environ["REMOTE_VISION_BASE_URL"] = args.remote_vision_base_url
+    if args.remote_vision_use_ssh_tunnel:
+        os.environ["REMOTE_VISION_USE_SSH_TUNNEL"] = "1"
+        os.environ.setdefault("RAANAV_PERCEPTION_BACKEND", "remote")
+    if args.remote_vision_ssh_host:
+        os.environ["REMOTE_VISION_SSH_HOST"] = args.remote_vision_ssh_host
+    if args.remote_vision_ssh_port is not None:
+        os.environ["REMOTE_VISION_SSH_PORT"] = str(args.remote_vision_ssh_port)
+    if args.remote_vision_ssh_user:
+        os.environ["REMOTE_VISION_SSH_USER"] = args.remote_vision_ssh_user
+    if args.remote_vision_ssh_password:
+        os.environ["REMOTE_VISION_SSH_PASSWORD"] = args.remote_vision_ssh_password
+    if args.remote_vision_local_port is not None:
+        os.environ["REMOTE_VISION_LOCAL_PORT"] = str(args.remote_vision_local_port)
+    if args.remote_vision_remote_port is not None:
+        os.environ["REMOTE_VISION_REMOTE_PORT"] = str(args.remote_vision_remote_port)
 
     run_sim_nav_loop(
         scene_dir=args.scene_dir,

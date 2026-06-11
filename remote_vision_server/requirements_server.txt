@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+requests
+pillow
+numpy==1.26.4
+opencv-python-headless
+torch
+torchvision
+transformers
+huggingface_hub

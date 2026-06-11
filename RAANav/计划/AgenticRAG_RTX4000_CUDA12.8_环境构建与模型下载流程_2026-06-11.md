@@ -2,6 +2,8 @@
 
 > 目标：从新机器 `git clone` 项目后，构建可运行离线评测、真实 Habitat-Sim 闭环、CLIP 图像检索、GroundingDINO + MobileSAM 感知模块的环境。
 
+> 更新：如果 GroundingDINO 和 MobileSAM 放到服务器上运行，工作站不需要安装这两个模型及其 checkpoint。远程视觉服务的完整部署与 SSH 调用流程见 `remote_vision_server/README.md`。
+
 参考源：
 
 - PyTorch 官方安装页支持 CUDA 12.8 选项，并要求 Python 3.10+：<https://pytorch.org/get-started/locally/>
@@ -153,6 +155,8 @@ python -c "import habitat_sim; print('habitat_sim ok')"
 
 ## 7. 安装 GroundingDINO
 
+如果你采用“服务器远程视觉模型”模式，本节只需要在服务器上执行；工作站跳过本节。
+
 ```bash
 mkdir -p third_party
 git clone https://github.com/IDEA-Research/GroundingDINO.git third_party/GroundingDINO
@@ -171,6 +175,8 @@ python -c "import groundingdino; print('groundingdino ok')"
 
 ## 8. 安装 MobileSAM
 
+如果你采用“服务器远程视觉模型”模式，本节只需要在服务器上执行；工作站跳过本节。
+
 ```bash
 git clone https://github.com/ChaoningZhang/MobileSAM.git third_party/MobileSAM
 cd third_party/MobileSAM
@@ -187,6 +193,8 @@ python -c "import mobile_sam; print('mobile_sam ok')"
 ---
 
 ## 9. 下载模型 Checkpoints
+
+如果你采用“服务器远程视觉模型”模式，本节只需要在服务器上执行；工作站跳过 GroundingDINO/MobileSAM checkpoint 下载。
 
 创建权重目录：
 
@@ -318,6 +326,18 @@ export TOKENIZERS_PARALLELISM=false
 export HF_HOME=$PWD/.hf_cache
 ```
 
+如果工作站通过 SSH 调用服务器上的 GroundingDINO/MobileSAM，额外设置：
+
+```bash
+export RAANAV_PERCEPTION_BACKEND=remote
+export REMOTE_VISION_USE_SSH_TUNNEL=1
+export REMOTE_VISION_SSH_HOST=7.216.187.6
+export REMOTE_VISION_SSH_PORT=30180
+export REMOTE_VISION_SSH_USER=root
+export REMOTE_VISION_SSH_PASSWORD='<server-password>'
+export REMOTE_VISION_REMOTE_PORT=8010
+```
+
 如果使用需要 LLM 的 Agent/RAG 评分模块，再设置 API Key：
 
 ```bash
@@ -334,6 +354,14 @@ python -c "import habitat_sim; print('habitat_sim ok')"
 python -c "from transformers import CLIPModel; CLIPModel.from_pretrained('openai/clip-vit-base-patch32'); print('clip ok')"
 python -c "import groundingdino; import mobile_sam; print('vision models ok')"
 ```
+
+远程视觉模式下，工作站验证改为：
+
+```bash
+python -c "from remote_vision_server.client import RemoteOpenVocabDetector; print('remote vision client ok')"
+```
+
+服务器端和 SSH tunnel 验证见 `remote_vision_server/README.md`。
 
 ---
 
