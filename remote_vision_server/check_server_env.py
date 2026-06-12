@@ -54,10 +54,22 @@ def resolve_bert() -> Optional[str]:
 
 def try_import(module: str) -> Dict[str, Any]:
     try:
+        if module == "groundingdino._C":
+            import torch  # noqa: F401
         imported = importlib.import_module(module)
         return {"ok": True, "module": module, "file": getattr(imported, "__file__", None)}
     except Exception as exc:
         return {"ok": False, "module": module, "error": repr(exc)}
+
+
+def resolve_torch_lib_dir() -> Optional[str]:
+    try:
+        import torch
+
+        path = Path(torch.__file__).resolve().parent / "lib"
+        return str(path) if path.exists() else None
+    except Exception:
+        return None
 
 
 def main() -> int:
@@ -87,9 +99,12 @@ def main() -> int:
             "TRANSFORMERS_CACHE": os.environ.get("TRANSFORMERS_CACHE"),
             "HF_HUB_OFFLINE": os.environ.get("HF_HUB_OFFLINE"),
             "TRANSFORMERS_OFFLINE": os.environ.get("TRANSFORMERS_OFFLINE"),
+            "TORCH_LIB_DIR": os.environ.get("TORCH_LIB_DIR"),
+            "LD_LIBRARY_PATH": os.environ.get("LD_LIBRARY_PATH"),
         },
         "paths": {
             "bert_base_uncased": resolve_bert(),
+            "torch_lib_dir": resolve_torch_lib_dir(),
             "gdino_setup": str(gdino_setup),
             "gdino_setup_exists": gdino_setup.exists(),
             "gdino_setup_may_skip_extensions": setup_may_skip_extensions(gdino_setup),
@@ -131,6 +146,8 @@ def main() -> int:
         failed.append("GroundingDINO setup.py appears to skip get_extensions")
     if not report["paths"]["groundingdino_extension_files"]:
         failed.append("no groundingdino/_C*.so extension file found")
+    if not report["paths"]["torch_lib_dir"]:
+        failed.append("torch lib dir not found")
     if not report["imports"]["groundingdino._C"]["ok"]:
         failed.append("groundingdino._C import failed")
     if failed:

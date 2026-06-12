@@ -111,8 +111,26 @@ Verify:
 
 ```bash
 find groundingdino -name "_C*.so" -print
-python -c "import groundingdino._C; print('GroundingDINO ops ok')"
+export TORCH_LIB_DIR=$(python -c 'import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / "lib")')
+export LD_LIBRARY_PATH="$TORCH_LIB_DIR:${LD_LIBRARY_PATH:-}"
+python -c "import torch; import groundingdino._C; print('GroundingDINO ops ok')"
 ```
+
+If `_C*.so` exists but import fails with:
+
+```text
+ImportError: libc10.so: cannot open shared object file: No such file or directory
+```
+
+the extension was built, but the dynamic linker cannot find PyTorch shared libraries. Fix it with:
+
+```bash
+export TORCH_LIB_DIR=$(python -c 'import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / "lib")')
+export LD_LIBRARY_PATH="$TORCH_LIB_DIR:${LD_LIBRARY_PATH:-}"
+python -c "import torch; import groundingdino._C; print('GroundingDINO ops ok')"
+```
+
+`remote_vision_server/run_server.sh` now applies this `LD_LIBRARY_PATH` fix automatically before starting uvicorn.
 
 Then check the full remote vision environment:
 

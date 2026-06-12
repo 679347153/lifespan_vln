@@ -9,6 +9,14 @@ export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
 export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
+if [[ -z "${TORCH_LIB_DIR:-}" ]]; then
+  TORCH_LIB_DIR="$(python -c 'import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / "lib")')"
+  export TORCH_LIB_DIR
+fi
+if [[ -d "${TORCH_LIB_DIR}" ]]; then
+  export LD_LIBRARY_PATH="${TORCH_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+fi
+
 if [[ -z "${BERT_BASE_UNCASED_PATH:-}" ]]; then
   if [[ -d "${REMOTE_VISION_REPO_ROOT}/../bert-base-uncased" ]]; then
     export BERT_BASE_UNCASED_PATH="${REMOTE_VISION_REPO_ROOT}/../bert-base-uncased"
