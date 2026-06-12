@@ -37,6 +37,14 @@ def _looks_like_hf_model_dir(path: Path) -> bool:
     )
 
 
+def _looks_like_clip_model_dir(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").exists() and (
+        (path / "preprocessor_config.json").exists()
+        or (path / "tokenizer_config.json").exists()
+        or (path / "vocab.json").exists()
+    )
+
+
 def _resolve_text_encoder_path(model_name: str = "bert-base-uncased") -> Optional[str]:
     explicit = (
         os.environ.get("BERT_BASE_UNCASED_PATH")
@@ -67,6 +75,48 @@ def _resolve_text_encoder_path(model_name: str = "bert-base-uncased") -> Optiona
     return None
 
 
+def _resolve_clip_model_path(model_name: str = "clip-vit-large-patch14") -> Optional[str]:
+    explicit = (
+        os.environ.get("REMOTE_VISION_CLIP_MODEL_PATH")
+        or os.environ.get("RAANAV_CLIP_MODEL_PATH")
+    )
+    candidates: List[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+
+    repo = _repo_root()
+    names = [
+        model_name,
+        os.environ.get("REMOTE_VISION_CLIP_MODEL", ""),
+        os.environ.get("RAANAV_CLIP_MODEL", ""),
+        "clip-vit-large-patch14",
+        "clip-vit-base-patch32",
+    ]
+    for name in names:
+        if not name or "/" in name:
+            continue
+        candidates.extend([repo / name, repo.parent / name])
+
+    for env_name in ["HF_HOME", "TRANSFORMERS_CACHE"]:
+        base = os.environ.get(env_name)
+        if base:
+            for name in ["clip-vit-large-patch14", "clip-vit-base-patch32"]:
+                candidates.append(Path(base) / name)
+
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if _looks_like_clip_model_dir(candidate):
+            return str(candidate)
+    return None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 class DetectionRequest(BaseModel):
     image_base64: Optional[str] = Field(default=None, description="Base64 image or data URL.")
     image_path: Optional[str] = Field(default=None, description="Server-local image path, useful for server tests.")
@@ -75,6 +125,12 @@ class DetectionRequest(BaseModel):
     box_threshold: float = 0.35
     text_threshold: float = 0.35
     return_mask_png: bool = False
+    return_clip_embedding: bool = False
+    clip_mode: str = "mask_only"
+    clip_masked_weight: float = 0.75
+    clip_bbox_padding: int = 20
+    clip_model: Optional[str] = None
+    clip_local_files_only: Optional[bool] = None
 
 
 class DetectionResponse(BaseModel):
@@ -98,6 +154,9 @@ class VisionDetector:
         self.gdino_config = gdino_config
         self.gdino_checkpoint = gdino_checkpoint
         self.mobilesam_checkpoint = mobilesam_checkpoint
+        self._clip_model: Any = None
+        self._clip_processor: Any = None
+        self._clip_model_name: Optional[str] = None
 
         from groundingdino.models import build_model
         from groundingdino.util.slconfig import SLConfig
@@ -131,6 +190,42 @@ class VisionDetector:
         except TypeError:
             return torch.load(path, map_location="cpu")
 
+    def _default_clip_model_name(self) -> str:
+        return (
+            os.environ.get("REMOTE_VISION_CLIP_MODEL_PATH")
+            or os.environ.get("RAANAV_CLIP_MODEL_PATH")
+            or _resolve_clip_model_path()
+            or os.environ.get("REMOTE_VISION_CLIP_MODEL")
+            or os.environ.get("RAANAV_CLIP_MODEL")
+            or "openai/clip-vit-base-patch32"
+        )
+
+    def _get_clip_model(
+        self,
+        model_name_or_path: Optional[str] = None,
+        local_files_only: Optional[bool] = None,
+    ) -> Any:
+        model_name = model_name_or_path or self._default_clip_model_name()
+        if local_files_only is None:
+            local_files_only = _env_bool(
+                "REMOTE_VISION_CLIP_LOCAL_FILES_ONLY",
+                default=os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1",
+            )
+        if self._clip_model is not None and self._clip_model_name == model_name:
+            return self._clip_model, self._clip_processor
+
+        from transformers import CLIPModel, CLIPProcessor
+
+        logger.info("Loading CLIP model: %s -> %s", model_name, self.device)
+        model = CLIPModel.from_pretrained(model_name, local_files_only=bool(local_files_only))
+        processor = CLIPProcessor.from_pretrained(model_name, local_files_only=bool(local_files_only))
+        model.to(self.device)
+        model.eval()
+        self._clip_model = model
+        self._clip_processor = processor
+        self._clip_model_name = model_name
+        return model, processor
+
     def detect_segment(
         self,
         image_rgb: np.ndarray,
@@ -138,6 +233,12 @@ class VisionDetector:
         box_threshold: float,
         text_threshold: float,
         return_mask_png: bool,
+        return_clip_embedding: bool = False,
+        clip_mode: str = "mask_only",
+        clip_masked_weight: float = 0.75,
+        clip_bbox_padding: int = 20,
+        clip_model: Optional[str] = None,
+        clip_local_files_only: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         from groundingdino.util.inference import predict
         import groundingdino.datasets.transforms as T
@@ -193,6 +294,18 @@ class VisionDetector:
             if return_mask_png:
                 record["mask_png_base64"] = _mask_to_png_base64(mask)
             detections.append(record)
+
+        if return_clip_embedding:
+            self._add_clip_embeddings(
+                image_rgb=image_rgb,
+                detections=detections,
+                masks_np=masks_np,
+                mode=clip_mode,
+                masked_weight=clip_masked_weight,
+                bbox_padding=clip_bbox_padding,
+                model_name_or_path=clip_model,
+                local_files_only=clip_local_files_only,
+            )
         return detections
 
     @staticmethod
@@ -208,6 +321,113 @@ class VisionDetector:
         x2 = np.clip(x2, 0, width)
         y2 = np.clip(y2, 0, height)
         return np.stack([x1, y1, x2, y2], axis=-1)
+
+    def _add_clip_embeddings(
+        self,
+        image_rgb: np.ndarray,
+        detections: List[Dict[str, Any]],
+        masks_np: np.ndarray,
+        mode: str,
+        masked_weight: float,
+        bbox_padding: int,
+        model_name_or_path: Optional[str],
+        local_files_only: Optional[bool],
+    ) -> None:
+        if not detections:
+            return
+        from PIL import Image as PILImage
+
+        model, processor = self._get_clip_model(model_name_or_path, local_files_only)
+        encode_mode = "mask_only" if mode not in {"mask_only", "full"} else mode
+        images_to_encode = []
+        det_indices: List[int] = []
+        image_roles: List[str] = []
+
+        for idx, det in enumerate(detections):
+            bbox = det.get("bbox_xyxy")
+            if bbox is None:
+                det["clip_embedding"] = []
+                continue
+            local_crop, masked_crop = _crop_and_mask_for_clip(
+                image_rgb=image_rgb,
+                bbox_xyxy=bbox,
+                mask=masks_np[idx] if idx < len(masks_np) else None,
+                padding=bbox_padding,
+            )
+            if local_crop.size == 0 or masked_crop.size == 0:
+                det["clip_embedding"] = []
+                continue
+            images_to_encode.append(PILImage.fromarray(masked_crop))
+            det_indices.append(idx)
+            image_roles.append("masked")
+            if encode_mode == "full":
+                images_to_encode.append(PILImage.fromarray(local_crop))
+                det_indices.append(idx)
+                image_roles.append("local")
+
+        if not images_to_encode:
+            for det in detections:
+                det.setdefault("clip_embedding", [])
+            return
+
+        all_feats = []
+        batch_size = int(os.environ.get("REMOTE_VISION_CLIP_BATCH_SIZE", "32"))
+        with torch.no_grad():
+            for start in range(0, len(images_to_encode), batch_size):
+                batch_imgs = images_to_encode[start : start + batch_size]
+                inputs = processor(images=batch_imgs, return_tensors="pt", padding=True)
+                inputs = {key: value.to(self.device) for key, value in inputs.items()}
+                feats = model.get_image_features(**inputs)
+                feats = feats / feats.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+                all_feats.append(feats.cpu())
+        features = torch.cat(all_feats, dim=0)
+
+        if encode_mode == "mask_only":
+            for feature_idx, det_idx in enumerate(det_indices):
+                detections[det_idx]["clip_embedding"] = features[feature_idx].numpy().tolist()
+        else:
+            accum: Dict[int, Dict[str, torch.Tensor]] = {}
+            for feature_idx, (det_idx, role) in enumerate(zip(det_indices, image_roles)):
+                accum.setdefault(det_idx, {})[role] = features[feature_idx]
+            weight = float(np.clip(masked_weight, 0.0, 1.0))
+            for det_idx, parts in accum.items():
+                masked = parts.get("masked")
+                local = parts.get("local")
+                if masked is not None and local is not None:
+                    fused = weight * masked + (1.0 - weight) * local
+                    fused = fused / fused.norm().clamp(min=1e-8)
+                    detections[det_idx]["clip_embedding"] = fused.numpy().tolist()
+                elif masked is not None:
+                    detections[det_idx]["clip_embedding"] = masked.numpy().tolist()
+                else:
+                    detections[det_idx]["clip_embedding"] = []
+
+        for det in detections:
+            det.setdefault("clip_embedding", [])
+
+
+def _crop_and_mask_for_clip(
+    image_rgb: np.ndarray,
+    bbox_xyxy: List[float],
+    mask: Optional[np.ndarray],
+    padding: int = 20,
+) -> Any:
+    height, width = image_rgb.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+    x1p = max(0, x1 - padding)
+    y1p = max(0, y1 - padding)
+    x2p = min(width, x2 + padding)
+    y2p = min(height, y2 + padding)
+    local_crop = image_rgb[y1p:y2p, x1p:x2p].copy()
+
+    if mask is not None:
+        masked_rgb = image_rgb.copy()
+        masked_rgb[~mask] = 0
+        masked_crop = masked_rgb[y1p:y2p, x1p:x2p].copy()
+    else:
+        masked_crop = local_crop.copy()
+
+    return local_crop, masked_crop
 
 
 def _mask_to_png_base64(mask: np.ndarray) -> str:
@@ -293,6 +513,8 @@ def health() -> Dict[str, Any]:
         "device": os.environ.get("REMOTE_VISION_DEVICE", "cuda"),
         "repo_root": str(_repo_root()),
         "bert_base_uncased_path": _resolve_text_encoder_path("bert-base-uncased"),
+        "clip_model_path": _resolve_clip_model_path(),
+        "clip_loaded": bool(loaded and getattr(get_detector(), "_clip_model", None) is not None) if loaded else False,
         "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE"),
         "transformers_offline": os.environ.get("TRANSFORMERS_OFFLINE"),
     }
@@ -305,6 +527,11 @@ def models() -> Dict[str, Any]:
         "data": [
             {
                 "id": "GroundingDINO-SwinT-OGC+MobileSAM-vit_t",
+                "object": "model",
+                "owned_by": "remote_vision_server",
+            },
+            {
+                "id": "CLIP-image-embedding",
                 "object": "model",
                 "owned_by": "remote_vision_server",
             }
@@ -325,6 +552,12 @@ def detect_segment(request: DetectionRequest) -> DetectionResponse:
             box_threshold=request.box_threshold,
             text_threshold=request.text_threshold,
             return_mask_png=request.return_mask_png,
+            return_clip_embedding=request.return_clip_embedding,
+            clip_mode=request.clip_mode,
+            clip_masked_weight=request.clip_masked_weight,
+            clip_bbox_padding=request.clip_bbox_padding,
+            clip_model=request.clip_model,
+            clip_local_files_only=request.clip_local_files_only,
         )
     except Exception as exc:
         logger.exception("Remote vision detect_segment failed")

@@ -99,9 +99,20 @@ class RemoteVisionConfig:
     remote_host: str = "127.0.0.1"
     remote_port: int = 8010
     health_timeout: float = 30.0
+    return_clip_embedding: bool = False
+    clip_mode: str = "mask_only"
+    clip_masked_weight: float = 0.75
+    clip_bbox_padding: int = 20
+    clip_model: Optional[str] = None
+    clip_local_files_only: Optional[bool] = None
 
     @classmethod
     def from_env(cls, **overrides: Any) -> "RemoteVisionConfig":
+        clip_local_files_only: Optional[bool]
+        if "REMOTE_VISION_CLIP_LOCAL_FILES_ONLY" in os.environ:
+            clip_local_files_only = _env_bool("REMOTE_VISION_CLIP_LOCAL_FILES_ONLY", True)
+        else:
+            clip_local_files_only = None
         config = cls(
             base_url=os.environ.get("REMOTE_VISION_BASE_URL"),
             request_timeout=float(os.environ.get("REMOTE_VISION_TIMEOUT", "120")),
@@ -114,6 +125,12 @@ class RemoteVisionConfig:
             remote_host=os.environ.get("REMOTE_VISION_REMOTE_HOST", "127.0.0.1"),
             remote_port=int(os.environ.get("REMOTE_VISION_REMOTE_PORT", "8010")),
             health_timeout=float(os.environ.get("REMOTE_VISION_HEALTH_TIMEOUT", "30")),
+            return_clip_embedding=_env_bool("REMOTE_VISION_RETURN_CLIP", _env_bool("RAANAV_REMOTE_CLIP_EMBEDDING", False)),
+            clip_mode=os.environ.get("REMOTE_VISION_CLIP_MODE", "mask_only"),
+            clip_masked_weight=float(os.environ.get("REMOTE_VISION_CLIP_MASKED_WEIGHT", "0.75")),
+            clip_bbox_padding=int(os.environ.get("REMOTE_VISION_CLIP_BBOX_PADDING", "20")),
+            clip_model=os.environ.get("REMOTE_VISION_CLIP_MODEL_PATH") or os.environ.get("REMOTE_VISION_CLIP_MODEL"),
+            clip_local_files_only=clip_local_files_only,
         )
         for key, value in overrides.items():
             if value is not None and hasattr(config, key):
@@ -232,14 +249,48 @@ class RemoteOpenVocabDetector:
         text_threshold: Optional[float] = None,
         *,
         return_masks: bool = True,
+        return_clip_embedding: Optional[bool] = None,
+        clip_mode: Optional[str] = None,
+        clip_masked_weight: Optional[float] = None,
+        clip_bbox_padding: Optional[int] = None,
+        clip_model: Optional[str] = None,
+        clip_local_files_only: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
+        want_clip = self.config.return_clip_embedding if return_clip_embedding is None else bool(return_clip_embedding)
         payload: Dict[str, Any] = {
             "image_base64": _image_to_data_url(rgb),
             "text_prompt": text_prompt,
             "box_threshold": 0.35 if box_threshold is None else float(box_threshold),
             "text_threshold": 0.35 if text_threshold is None else float(text_threshold),
             "return_mask_png": bool(return_masks),
+            "return_clip_embedding": want_clip,
         }
+        if want_clip:
+            payload.update(
+                {
+                    "clip_mode": clip_mode or self.config.clip_mode,
+                    "clip_masked_weight": (
+                        self.config.clip_masked_weight
+                        if clip_masked_weight is None
+                        else float(clip_masked_weight)
+                    ),
+                    "clip_bbox_padding": (
+                        self.config.clip_bbox_padding
+                        if clip_bbox_padding is None
+                        else int(clip_bbox_padding)
+                    ),
+                }
+            )
+            selected_clip_model = clip_model or self.config.clip_model
+            if selected_clip_model:
+                payload["clip_model"] = selected_clip_model
+            selected_local_only = (
+                self.config.clip_local_files_only
+                if clip_local_files_only is None
+                else bool(clip_local_files_only)
+            )
+            if selected_local_only is not None:
+                payload["clip_local_files_only"] = selected_local_only
         response = requests.post(
             f"{self.base_url}/v1/detect_segment",
             json=payload,

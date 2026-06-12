@@ -33,6 +33,10 @@ def main() -> None:
     parser.add_argument("--box-threshold", type=float, default=0.35)
     parser.add_argument("--text-threshold", type=float, default=0.35)
     parser.add_argument("--return-mask-png", action="store_true")
+    parser.add_argument("--return-clip-embedding", action="store_true")
+    parser.add_argument("--clip-mode", choices=["mask_only", "full"], default="mask_only")
+    parser.add_argument("--clip-model", default=None, help="Server-side CLIP model path or model id.")
+    parser.add_argument("--clip-online", action="store_true", help="Allow server-side online CLIP loading.")
     args = parser.parse_args()
 
     payload: Dict[str, Any] = {
@@ -41,7 +45,13 @@ def main() -> None:
         "box_threshold": args.box_threshold,
         "text_threshold": args.text_threshold,
         "return_mask_png": bool(args.return_mask_png),
+        "return_clip_embedding": bool(args.return_clip_embedding),
+        "clip_mode": args.clip_mode,
     }
+    if args.clip_model:
+        payload["clip_model"] = args.clip_model
+    if args.clip_online:
+        payload["clip_local_files_only"] = False
     response = requests.post(f"{args.base_url.rstrip('/')}/v1/detect_segment", json=payload, timeout=120)
     if response.status_code >= 400:
         print(response.text)

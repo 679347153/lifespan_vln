@@ -356,6 +356,14 @@ def run_sim_nav_loop(
                 _vi = 0  # 视角索引 (0=正前方)
                 # CLIP 编码配置
                 clip_cfg = cfg.get("clip_visual", {})
+                remote_clip_enabled = str(
+                    os.environ.get("REMOTE_VISION_RETURN_CLIP")
+                    or os.environ.get("RAANAV_REMOTE_CLIP_EMBEDDING")
+                    or ""
+                ).strip().lower() in {"1", "true", "yes", "y", "on"}
+                clip_enabled = bool(clip_cfg.get("enabled", True)) and str(
+                    os.environ.get("RAANAV_DISABLE_CLIP", "")
+                ).strip().lower() not in {"1", "true", "yes", "y", "on"} and not remote_clip_enabled
                 clip_encode_mode = clip_cfg.get("mode", "mask_only")
                 clip_masked_weight = float(clip_cfg.get("masked_weight", 0.75))
                 clip_bbox_padding = int(clip_cfg.get("bbox_padding", 20))
@@ -378,7 +386,8 @@ def run_sim_nav_loop(
                                               box_threshold=0.40, text_threshold=0.35)
 
                     # CLIP 视觉编码: 为该视角下的检测结果计算 clip_embedding
-                    if dets:
+                    dets_have_clip = any(bool(d.get("clip_embedding")) for d in dets)
+                    if dets and clip_enabled and not dets_have_clip:
                         _ensure_clip_model()
                         compute_clip_embeddings_for_detections(
                             rgb_np, dets,
@@ -389,6 +398,9 @@ def run_sim_nav_loop(
                             masked_weight=clip_masked_weight,
                             bbox_padding=clip_bbox_padding,
                         )
+                    elif dets:
+                        for d in dets:
+                            d.setdefault("clip_embedding", [])
 
                     _img_area = rgb_np.shape[0] * rgb_np.shape[1]
                     for d in dets:
@@ -533,12 +545,25 @@ def run_sim_nav_loop(
                 return
             import torch as _torch
             from transformers import CLIPProcessor, CLIPModel
-            _model_name = "openai/clip-vit-base-patch32"
+            clip_cfg = cfg.get("clip_visual", {})
+            _model_name = (
+                os.environ.get("RAANAV_CLIP_MODEL_PATH")
+                or os.environ.get("RAANAV_CLIP_MODEL")
+                or clip_cfg.get("model_path")
+                or clip_cfg.get("model_name")
+                or "openai/clip-vit-base-patch32"
+            )
+            _local_only = str(
+                os.environ.get(
+                    "RAANAV_CLIP_LOCAL_FILES_ONLY",
+                    "1" if os.environ.get("HF_HUB_OFFLINE") == "1" or os.environ.get("TRANSFORMERS_OFFLINE") == "1" else "0",
+                )
+            ).strip().lower() in {"1", "true", "yes", "y", "on"}
             _dev = "cuda" if _torch.cuda.is_available() else "cpu"
             print(f"  [CLIP] 加载模型 {_model_name} → {_dev} ...")
             os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-            _m = CLIPModel.from_pretrained(_model_name)
-            _p = CLIPProcessor.from_pretrained(_model_name)
+            _m = CLIPModel.from_pretrained(_model_name, local_files_only=_local_only)
+            _p = CLIPProcessor.from_pretrained(_model_name, local_files_only=_local_only)
             _m.to(_dev); _m.eval()
             _clip_model_cache["model"] = _m
             _clip_model_cache["processor"] = _p
@@ -550,6 +575,23 @@ def run_sim_nav_loop(
             不读磁盘索引, 直接用内存中物体的 label 编码 → 查询余弦排序.
             仅搜索与 agent 同楼层的物体 (|Δy| < 1.5m).
             """
+            if str(os.environ.get("RAANAV_DISABLE_CLIP", "")).strip().lower() in {"1", "true", "yes", "y", "on"}:
+                agent_y = float(agent.get_position()[1])
+                floor_y_threshold = 1.5
+                query = query_text.strip().lower()
+                fallback_hits: List[Tuple[str, float]] = []
+                for fl in floors_history:
+                    for rm in fl.rooms:
+                        for o in rm.objects:
+                            if not (o.obj_id and o.label):
+                                continue
+                            if o.pos_3d and abs(float(o.pos_3d[1]) - agent_y) > floor_y_threshold:
+                                continue
+                            label = str(o.label).strip().lower()
+                            if label == query:
+                                fallback_hits.append((o.obj_id, 1.0))
+                return fallback_hits
+
             import torch as _torch
 
             _ensure_clip_model()
@@ -1346,6 +1388,22 @@ def main():
     parser.add_argument("--remote-vision-ssh-password", default=None)
     parser.add_argument("--remote-vision-local-port", type=int, default=None)
     parser.add_argument("--remote-vision-remote-port", type=int, default=None)
+    parser.add_argument("--remote-clip", action="store_true",
+                        help="Ask the remote vision server to compute CLIP image embeddings.")
+    parser.add_argument("--remote-clip-model-path", default=None,
+                        help="Server-side Hugging Face CLIP directory, e.g. /home/.../clip-vit-large-patch14")
+    parser.add_argument("--remote-clip-model-name", default=None,
+                        help="Server-side CLIP model id or local model name.")
+    parser.add_argument("--remote-clip-online", action="store_true",
+                        help="Allow the remote CLIP loader to use online Hugging Face lookups.")
+    parser.add_argument("--disable-clip", action="store_true",
+                        help="Skip local CLIP embeddings for detections. Useful for remote vision smoke tests.")
+    parser.add_argument("--clip-model-path", default=None,
+                        help="Local Hugging Face CLIP directory, e.g. /data/trans/clip-vit-large-patch14")
+    parser.add_argument("--clip-model-name", default=None,
+                        help="HF model id or local model name for CLIP.")
+    parser.add_argument("--clip-online", action="store_true",
+                        help="Allow CLIP to download from HF/mirror instead of local-only loading.")
     args = parser.parse_args()
 
     if args.perception_backend:
@@ -1367,6 +1425,23 @@ def main():
         os.environ["REMOTE_VISION_LOCAL_PORT"] = str(args.remote_vision_local_port)
     if args.remote_vision_remote_port is not None:
         os.environ["REMOTE_VISION_REMOTE_PORT"] = str(args.remote_vision_remote_port)
+    if args.remote_clip:
+        os.environ["REMOTE_VISION_RETURN_CLIP"] = "1"
+        os.environ["RAANAV_REMOTE_CLIP_EMBEDDING"] = "1"
+    if args.remote_clip_model_path:
+        os.environ["REMOTE_VISION_CLIP_MODEL_PATH"] = args.remote_clip_model_path
+    if args.remote_clip_model_name:
+        os.environ["REMOTE_VISION_CLIP_MODEL"] = args.remote_clip_model_name
+    if args.remote_clip_online:
+        os.environ["REMOTE_VISION_CLIP_LOCAL_FILES_ONLY"] = "0"
+    if args.disable_clip:
+        os.environ["RAANAV_DISABLE_CLIP"] = "1"
+    if args.clip_model_path:
+        os.environ["RAANAV_CLIP_MODEL_PATH"] = args.clip_model_path
+    if args.clip_model_name:
+        os.environ["RAANAV_CLIP_MODEL"] = args.clip_model_name
+    if args.clip_online:
+        os.environ["RAANAV_CLIP_LOCAL_FILES_ONLY"] = "0"
 
     run_sim_nav_loop(
         scene_dir=args.scene_dir,
