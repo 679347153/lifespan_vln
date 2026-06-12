@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import base64
 import io
+import json
 import os
 import shutil
 import socket
@@ -67,6 +68,22 @@ def _decode_mask_png(data_url: str) -> np.ndarray:
     data = base64.b64decode(raw)
     mask = Image.open(io.BytesIO(data)).convert("L")
     return np.asarray(mask) > 0
+
+
+def _raise_for_remote_error(response: Any) -> None:
+    if response.status_code < 400:
+        return
+    body = response.text
+    try:
+        parsed = response.json()
+        body = json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    if len(body) > 4000:
+        body = body[:4000] + "\n... <truncated>"
+    raise RuntimeError(
+        f"Remote vision request failed: HTTP {response.status_code} {response.url}\n{body}"
+    )
 
 
 @dataclass
@@ -228,7 +245,7 @@ class RemoteOpenVocabDetector:
             json=payload,
             timeout=self.config.request_timeout,
         )
-        response.raise_for_status()
+        _raise_for_remote_error(response)
         data = response.json()
         detections = data.get("detections", [])
         for det in detections:

@@ -43,7 +43,9 @@ def main() -> None:
         "return_mask_png": bool(args.return_mask_png),
     }
     response = requests.post(f"{args.base_url.rstrip('/')}/v1/detect_segment", json=payload, timeout=120)
-    response.raise_for_status()
+    if response.status_code >= 400:
+        print(response.text)
+        response.raise_for_status()
     print(json.dumps(response.json(), ensure_ascii=False, indent=2))
 
 

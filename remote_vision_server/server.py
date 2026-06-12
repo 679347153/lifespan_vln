@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
 import time
 from functools import lru_cache
@@ -18,6 +19,8 @@ from pydantic import BaseModel, Field
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+logger = logging.getLogger("remote_vision_server")
 
 
 def _repo_root() -> Path:
@@ -324,6 +327,7 @@ def detect_segment(request: DetectionRequest) -> DetectionResponse:
             return_mask_png=request.return_mask_png,
         )
     except Exception as exc:
+        logger.exception("Remote vision detect_segment failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     height, width = image_rgb.shape[:2]
