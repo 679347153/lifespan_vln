@@ -34,14 +34,16 @@ import cv2
 import numpy as np
 import torch
 
-_PROJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _PROJ_ROOT not in sys.path:
-    sys.path.insert(0, _PROJ_ROOT)
+_PROJ_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = _PROJ_ROOT.parents[1]
+for _path in [str(_PROJ_ROOT), str(_REPO_ROOT)]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 # GroundingDINO 配置路径 (安装在 ~/agentRAG/models/GroundingDINO)
 _GDINO_CFG = os.path.expanduser("~/agentRAG/models/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
-_GDINO_CKPT = os.path.join(_PROJ_ROOT, "checkpoints", "groundingdino_swint_ogc.pth")
-_MOBILESAM_CKPT = os.path.join(_PROJ_ROOT, "checkpoints", "mobile_sam.pt")
+_GDINO_CKPT = os.path.join(str(_PROJ_ROOT), "checkpoints", "groundingdino_swint_ogc.pth")
+_MOBILESAM_CKPT = os.path.join(str(_PROJ_ROOT), "checkpoints", "mobile_sam.pt")
 
 
 class OpenVocabDetector:

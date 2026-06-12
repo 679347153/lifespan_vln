@@ -35,9 +35,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import cv2
 import numpy as np
 
-_PROJ_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _PROJ_ROOT not in sys.path:
-    sys.path.insert(0, _PROJ_ROOT)
+_PROJ_ROOT = Path(__file__).resolve().parents[3]
+_REPO_ROOT = _PROJ_ROOT.parents[1]
+for _path in [str(_PROJ_ROOT), str(_REPO_ROOT)]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 os.environ.setdefault("MAGNUM_LOG", "quiet")
 os.environ.setdefault("HABITAT_SIM_LOG", "quiet")

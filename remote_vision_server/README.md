@@ -311,6 +311,8 @@ export REMOTE_VISION_REMOTE_PORT=8010
 bash remote_vision_server/workstation_tunnel.sh
 ```
 
+如果 tunnel 成功，这个终端会一直停在 SSH 进程中，不会回到 shell prompt。请保持该终端打开，再开第二个终端执行 `curl` 或项目脚本。
+
 tunnel 建立后，工作站访问：
 
 ```text
@@ -328,6 +330,20 @@ http://127.0.0.1:50220
 ```bash
 curl http://127.0.0.1:50220/health
 curl http://127.0.0.1:50220/v1/models
+```
+
+如果运行 `bash remote_vision_server/workstation_tunnel.sh` 后马上回到 prompt，说明 SSH tunnel 没有建立成功。打开 debug：
+
+```bash
+export REMOTE_VISION_SSH_DEBUG=1
+bash remote_vision_server/workstation_tunnel.sh
+```
+
+也可以直接检查远端服务是否真的在 `8010`：
+
+```bash
+SSHPASS='666666' sshpass -e ssh -p 30180 root@7.216.187.6 \
+  "curl -sS http://127.0.0.1:8010/health"
 ```
 
 ---
