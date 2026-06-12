@@ -15,12 +15,53 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
 def _repo_root() -> Path:
     return Path(os.environ.get("REMOTE_VISION_REPO_ROOT", Path.cwd())).resolve()
 
 
 def _default_path(relative: str) -> str:
     return str((_repo_root() / relative).resolve())
+
+
+def _looks_like_hf_model_dir(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").exists() and (
+        (path / "tokenizer_config.json").exists() or (path / "vocab.txt").exists()
+    )
+
+
+def _resolve_text_encoder_path(model_name: str = "bert-base-uncased") -> Optional[str]:
+    explicit = (
+        os.environ.get("BERT_BASE_UNCASED_PATH")
+        or os.environ.get("REMOTE_VISION_BERT_PATH")
+        or os.environ.get("GROUNDINGDINO_TEXT_ENCODER_PATH")
+    )
+    candidates: List[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+
+    repo = _repo_root()
+    candidates.extend(
+        [
+            repo / model_name,
+            repo.parent / model_name,
+        ]
+    )
+
+    for env_name in ["HF_HOME", "TRANSFORMERS_CACHE"]:
+        base = os.environ.get(env_name)
+        if base:
+            candidates.append(Path(base) / model_name)
+
+    for candidate in candidates:
+        candidate = candidate.expanduser().resolve()
+        if _looks_like_hf_model_dir(candidate):
+            return str(candidate)
+    return None
 
 
 class DetectionRequest(BaseModel):
@@ -61,6 +102,11 @@ class VisionDetector:
 
         args = SLConfig.fromfile(gdino_config)
         args.device = device
+        if getattr(args, "text_encoder_type", None) == "bert-base-uncased":
+            local_text_encoder = _resolve_text_encoder_path("bert-base-uncased")
+            if local_text_encoder:
+                args.text_encoder_type = local_text_encoder
+                os.environ["BERT_BASE_UNCASED_PATH"] = local_text_encoder
         self.gdino_model = build_model(args)
         checkpoint = self._torch_load(gdino_checkpoint)
         state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
@@ -243,6 +289,9 @@ def health() -> Dict[str, Any]:
         "loaded": loaded,
         "device": os.environ.get("REMOTE_VISION_DEVICE", "cuda"),
         "repo_root": str(_repo_root()),
+        "bert_base_uncased_path": _resolve_text_encoder_path("bert-base-uncased"),
+        "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE"),
+        "transformers_offline": os.environ.get("TRANSFORMERS_OFFLINE"),
     }
 
 

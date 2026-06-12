@@ -131,6 +131,34 @@ python -c "import groundingdino; print('groundingdino ok')"
 python -c "import mobile_sam; print('mobile_sam ok')"
 ```
 
+如果启动时出现：
+
+```text
+Failed to load custom C++ ops. Running on CPU mode Only!
+```
+
+说明 GroundingDINO 的 CUDA/C++ 扩展没有编译成功。建议在服务器上重新编译：
+
+```bash
+conda activate raanav-vision
+cd /path/to/agent_based_method/third_party/GroundingDINO
+
+export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+export FORCE_CUDA=1
+
+python setup.py build_ext --inplace
+pip install -e .
+```
+
+如果服务器没有 `/usr/local/cuda`，先查 CUDA 路径：
+
+```bash
+which nvcc
+dirname "$(dirname "$(which nvcc)")"
+```
+
+然后把 `CUDA_HOME` 设置成该路径。
+
 ---
 
 ## 5. 下载模型 Checkpoints
@@ -180,9 +208,47 @@ export REMOTE_VISION_REPO_ROOT=$PWD
 export REMOTE_VISION_DEVICE=cuda
 export REMOTE_VISION_HOST=127.0.0.1
 export REMOTE_VISION_PORT=8010
+export HF_HOME=/path/to/local/hf_or_model_root
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 
 bash remote_vision_server/run_server.sh
 ```
+
+如果你的服务器目录和当前示例一致：
+
+```text
+/home/ma-user/work/zhangWei/mtu3d/data/trans/
+  agent_based_method/
+  bert-base-uncased/
+  clip-vit-large-patch14/
+  dinov2-large/
+```
+
+则推荐这样启动：
+
+```bash
+conda activate pytorch_cuda12.9
+cd /home/ma-user/work/zhangWei/mtu3d/data/trans/agent_based_method
+
+export HF_HOME=/home/ma-user/work/zhangWei/mtu3d/data/trans
+export BERT_BASE_UNCASED_PATH=/home/ma-user/work/zhangWei/mtu3d/data/trans/bert-base-uncased
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export REMOTE_VISION_EAGER_LOAD=1
+
+bash remote_vision_server/run_server.sh
+```
+
+`run_server.sh` 也会自动尝试寻找：
+
+```text
+$REMOTE_VISION_REPO_ROOT/../bert-base-uncased
+$HF_HOME/bert-base-uncased
+$TRANSFORMERS_CACHE/bert-base-uncased
+```
+
+找到后会把 GroundingDINO 的 `text_encoder_type` 改为本地绝对路径，避免联网访问 Hugging Face。
 
 服务默认只监听：
 
@@ -509,6 +575,29 @@ sshpass -e ssh -p 30180 root@7.216.187.6
 ### 第一次请求很慢
 
 第一次 `/v1/detect_segment` 会加载 GroundingDINO 和 MobileSAM。后续请求会复用同一份模型。
+
+### 启动时反复请求 `https://huggingface.co/bert-base-uncased`
+
+这是 GroundingDINO 的文本编码器没有命中本地 BERT 路径。按以下方式启动：
+
+```bash
+cd /home/ma-user/work/zhangWei/mtu3d/data/trans/agent_based_method
+
+export HF_HOME=/home/ma-user/work/zhangWei/mtu3d/data/trans
+export BERT_BASE_UNCASED_PATH=/home/ma-user/work/zhangWei/mtu3d/data/trans/bert-base-uncased
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export REMOTE_VISION_EAGER_LOAD=1
+
+bash remote_vision_server/run_server.sh
+```
+
+确认 BERT 目录里至少有：
+
+```bash
+ls /home/ma-user/work/zhangWei/mtu3d/data/trans/bert-base-uncased/config.json
+ls /home/ma-user/work/zhangWei/mtu3d/data/trans/bert-base-uncased/vocab.txt
+```
 
 ### 工作站仍然尝试加载本地 GroundingDINO
 
