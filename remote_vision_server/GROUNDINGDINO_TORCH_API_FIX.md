@@ -21,6 +21,30 @@ Skipping the extension only postpones the problem. Installation may appear to pa
 name '_C' is not defined
 ```
 
+## How To Recognize A Skipped Extension Build
+
+This log means the extension was not built:
+
+```text
+Building editable for groundingdino ... done
+Created wheel for groundingdino: groundingdino-0.1.0-0.editable-py3-none-any.whl
+Successfully installed groundingdino-0.1.0
+```
+
+The important clue is:
+
+```text
+py3-none-any.whl
+```
+
+and there is no `running build_ext` / no `_C*.so` file. In that case:
+
+```bash
+python -c "import groundingdino._C"
+```
+
+will still fail. This usually means `setup.py` is still patched to skip extension compilation, or `ext_modules` is empty.
+
 ## Why Compilation Failed
 
 Your compile log shows:
@@ -47,6 +71,21 @@ value.data_ptr<scalar_t>()
 
 First restore the original `third_party/GroundingDINO/setup.py`. If you changed `get_extensions()` to `return None`, undo that change.
 
+If the GroundingDINO checkout still has its `.git` directory, the simplest restore is:
+
+```bash
+cd /home/ma-user/work/zhangWei/mtu3d/data/trans/agent_based_method/third_party/GroundingDINO
+git checkout -- setup.py
+```
+
+Then confirm it is not skipping extensions:
+
+```bash
+grep -n "def get_extensions\\|return None\\|ext_modules" setup.py
+```
+
+`return None` must not appear inside `get_extensions()`.
+
 Then run the patch script from the project root:
 
 ```bash
@@ -71,6 +110,7 @@ pip install -e . --no-build-isolation -v
 Verify:
 
 ```bash
+find groundingdino -name "_C*.so" -print
 python -c "import groundingdino._C; print('GroundingDINO ops ok')"
 ```
 

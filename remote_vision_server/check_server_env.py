@@ -23,6 +23,13 @@ def setup_may_skip_extensions(path: Path) -> bool:
     return "def get_extensions" in text and "return None" in text
 
 
+def find_groundingdino_extension(root: Path) -> list[str]:
+    package_root = root / "groundingdino"
+    if not package_root.exists():
+        return []
+    return [str(path) for path in package_root.rglob("_C*.so")]
+
+
 def resolve_bert() -> Optional[str]:
     explicit = (
         os.environ.get("BERT_BASE_UNCASED_PATH")
@@ -86,6 +93,7 @@ def main() -> int:
             "gdino_setup": str(gdino_setup),
             "gdino_setup_exists": gdino_setup.exists(),
             "gdino_setup_may_skip_extensions": setup_may_skip_extensions(gdino_setup),
+            "groundingdino_extension_files": find_groundingdino_extension(gdino_root),
             "gdino_config": gdino_config,
             "gdino_checkpoint": gdino_checkpoint,
             "mobilesam_checkpoint": mobilesam_checkpoint,
@@ -121,6 +129,8 @@ def main() -> int:
             failed.append(key)
     if report["paths"]["gdino_setup_may_skip_extensions"]:
         failed.append("GroundingDINO setup.py appears to skip get_extensions")
+    if not report["paths"]["groundingdino_extension_files"]:
+        failed.append("no groundingdino/_C*.so extension file found")
     if not report["imports"]["groundingdino._C"]["ok"]:
         failed.append("groundingdino._C import failed")
     if failed:
