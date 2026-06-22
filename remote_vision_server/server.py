@@ -142,6 +142,26 @@ class DetectionResponse(BaseModel):
     detections: List[Dict[str, Any]]
 
 
+class ClipTextImageSimilarityRequest(BaseModel):
+    text: str
+    image_embeddings: List[List[float]]
+    ids: Optional[List[str]] = None
+    labels: Optional[List[str]] = None
+    top_k: int = 20
+    min_score: float = 0.0
+    clip_model: Optional[str] = None
+    clip_local_files_only: Optional[bool] = None
+
+
+class ClipTextImageSimilarityResponse(BaseModel):
+    model: str
+    device: str
+    elapsed_seconds: float
+    query: str
+    embedding_dim: int
+    results: List[Dict[str, Any]]
+
+
 class VisionDetector:
     def __init__(
         self,
@@ -225,6 +245,61 @@ class VisionDetector:
         self._clip_processor = processor
         self._clip_model_name = model_name
         return model, processor
+
+    def encode_clip_text(
+        self,
+        text: str,
+        model_name_or_path: Optional[str] = None,
+        local_files_only: Optional[bool] = None,
+    ) -> torch.Tensor:
+        model, processor = self._get_clip_model(model_name_or_path, local_files_only)
+        inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+        inputs = {key: value.to(self.device) for key, value in inputs.items()}
+        with torch.no_grad():
+            feature = model.get_text_features(**inputs)
+            feature = feature / feature.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        return feature[0].detach().cpu()
+
+    def text_image_similarity(
+        self,
+        text: str,
+        image_embeddings: List[List[float]],
+        ids: Optional[List[str]] = None,
+        labels: Optional[List[str]] = None,
+        top_k: int = 20,
+        min_score: float = 0.0,
+        model_name_or_path: Optional[str] = None,
+        local_files_only: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        if not image_embeddings:
+            return {"embedding_dim": 0, "results": []}
+        matrix = torch.tensor(image_embeddings, dtype=torch.float32)
+        if matrix.ndim != 2:
+            raise ValueError("image_embeddings must be a 2D list.")
+        query = self.encode_clip_text(text, model_name_or_path, local_files_only)
+        if int(matrix.shape[1]) != int(query.shape[0]):
+            raise ValueError(
+                f"CLIP dimension mismatch: image dim={int(matrix.shape[1])}, text dim={int(query.shape[0])}. "
+                "Use the same CLIP model for detection embeddings and text search."
+            )
+        matrix = matrix / matrix.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        scores = torch.mv(matrix, query).numpy().tolist()
+        rows: List[Dict[str, Any]] = []
+        for idx, score in enumerate(scores):
+            if float(score) < min_score:
+                continue
+            rows.append(
+                {
+                    "index": idx,
+                    "id": ids[idx] if ids and idx < len(ids) else str(idx),
+                    "label": labels[idx] if labels and idx < len(labels) else "",
+                    "score": float(score),
+                }
+            )
+        rows.sort(key=lambda item: (-float(item["score"]), str(item["id"])))
+        if top_k > 0:
+            rows = rows[:top_k]
+        return {"embedding_dim": int(matrix.shape[1]), "results": rows}
 
     def detect_segment(
         self,
@@ -534,6 +609,11 @@ def models() -> Dict[str, Any]:
                 "id": "CLIP-image-embedding",
                 "object": "model",
                 "owned_by": "remote_vision_server",
+            },
+            {
+                "id": "CLIP-text-image-similarity",
+                "object": "model",
+                "owned_by": "remote_vision_server",
             }
         ],
     }
@@ -571,6 +651,34 @@ def detect_segment(request: DetectionRequest) -> DetectionResponse:
         width=width,
         height=height,
         detections=detections,
+    )
+
+
+@app.post("/v1/clip/text_image_similarity", response_model=ClipTextImageSimilarityResponse)
+def clip_text_image_similarity(request: ClipTextImageSimilarityRequest) -> ClipTextImageSimilarityResponse:
+    start = time.time()
+    try:
+        detector = get_detector()
+        result = detector.text_image_similarity(
+            text=request.text,
+            image_embeddings=request.image_embeddings,
+            ids=request.ids,
+            labels=request.labels,
+            top_k=request.top_k,
+            min_score=request.min_score,
+            model_name_or_path=request.clip_model,
+            local_files_only=request.clip_local_files_only,
+        )
+    except Exception as exc:
+        logger.exception("Remote CLIP text/image similarity failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ClipTextImageSimilarityResponse(
+        model=detector._clip_model_name or detector._default_clip_model_name(),
+        device=detector.device,
+        elapsed_seconds=round(time.time() - start, 6),
+        query=request.text,
+        embedding_dim=int(result["embedding_dim"]),
+        results=result["results"],
     )
 
 

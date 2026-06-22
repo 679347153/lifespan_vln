@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-import requests
+try:
+    import requests
+except ModuleNotFoundError:  # pragma: no cover - handled at runtime.
+    requests = None  # type: ignore[assignment]
 
 
 def image_to_data_url(path: Path) -> str:
@@ -37,7 +40,11 @@ def main() -> None:
     parser.add_argument("--clip-mode", choices=["mask_only", "full"], default="mask_only")
     parser.add_argument("--clip-model", default=None, help="Server-side CLIP model path or model id.")
     parser.add_argument("--clip-online", action="store_true", help="Allow server-side online CLIP loading.")
+    parser.add_argument("--clip-query-text", default=None, help="Optional text query to rank returned CLIP image embeddings.")
+    parser.add_argument("--clip-min-score", type=float, default=0.0)
     args = parser.parse_args()
+    if requests is None:
+        raise RuntimeError("Missing dependency: requests. Install it with: pip install requests")
 
     payload: Dict[str, Any] = {
         "image_base64": image_to_data_url(Path(args.image)),
@@ -56,7 +63,37 @@ def main() -> None:
     if response.status_code >= 400:
         print(response.text)
         response.raise_for_status()
-    print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+    data = response.json()
+    if args.clip_query_text:
+        detections = data.get("detections", [])
+        embeddings = [det.get("clip_embedding") for det in detections if det.get("clip_embedding")]
+        ids = [str(i) for i, det in enumerate(detections) if det.get("clip_embedding")]
+        labels = [str(det.get("label", "")) for det in detections if det.get("clip_embedding")]
+        if embeddings:
+            sim_payload: Dict[str, Any] = {
+                "text": args.clip_query_text,
+                "image_embeddings": embeddings,
+                "ids": ids,
+                "labels": labels,
+                "top_k": len(embeddings),
+                "min_score": args.clip_min_score,
+            }
+            if args.clip_model:
+                sim_payload["clip_model"] = args.clip_model
+            if args.clip_online:
+                sim_payload["clip_local_files_only"] = False
+            sim_resp = requests.post(
+                f"{args.base_url.rstrip('/')}/v1/clip/text_image_similarity",
+                json=sim_payload,
+                timeout=120,
+            )
+            if sim_resp.status_code >= 400:
+                print(sim_resp.text)
+                sim_resp.raise_for_status()
+            data["clip_text_image_similarity"] = sim_resp.json()
+        else:
+            data["clip_text_image_similarity"] = {"results": [], "reason": "no_clip_embeddings"}
+    print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

@@ -118,6 +118,26 @@ python remote_vision_server/test_client.py \
 "clip_embedding": [ ... ]
 ```
 
+如果要同时测试“文本查询 vs 检测 crop 图像 embedding”的远端 CLIP 相似度：
+
+```bash
+python remote_vision_server/test_client.py \
+  --base-url http://127.0.0.1:50220 \
+  --image objects_images/Camera_01.webp \
+  --labels "chair,table,sofa,bed,cabinet,lamp" \
+  --return-clip-embedding \
+  --clip-query-text "chair" \
+  --clip-min-score 0.65
+```
+
+这会额外请求：
+
+```text
+POST /v1/clip/text_image_similarity
+```
+
+该接口使用服务器上的同一个 CLIP 模型计算 text embedding，并与请求中的 image embeddings 做 cosine similarity。它用于避免工作站离线时无法加载 CLIP 文本模型。
+
 如果使用 `clip-vit-large-patch14`，embedding 通常是 768 维；如果使用 `clip-vit-base-patch32`，通常是 512 维。关键是同一次实验内保持同一个 CLIP 模型。
 
 ## 5. 运行闭环导航

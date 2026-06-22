@@ -23,6 +23,11 @@ class FusionParams:
     epsilon: float = 1e-8
     neg_gamma_min: float = 0.1
     neg_gamma_span: float = 0.25
+    use_agent: bool = True
+    use_time_decay: bool = True
+    use_cooccur: bool = True
+    use_clip: bool = True
+    label_only: bool = False
 
 
 @dataclass
@@ -39,6 +44,10 @@ class CandidateScore:
     w_agent: float
     w_rag: float
     S_final: float
+    stability: float
+    exist_prob: float
+    negative_feedback_count: int
+    stability_bucket: str
     query_modality: str
     sim_backend: str
     reason: str
@@ -126,6 +135,22 @@ def agent_prior(obj: Object, query: QuerySpec) -> float:
     return max(0.0, min(1.0, score))
 
 
+def stability_bucket(value: float) -> str:
+    if value >= 0.67:
+        return "high"
+    if value >= 0.34:
+        return "medium"
+    return "low"
+
+
+def _label_similarity(obj: Object, query: QuerySpec) -> float:
+    if obj.obj_id == query.target_object_id:
+        return 1.0
+    if normalize_label(obj.label) == query.query_label:
+        return 0.95
+    return token_overlap(obj.label, query.query_label)
+
+
 def compute_candidate_score(
     obj: Object,
     query: QuerySpec,
@@ -141,26 +166,32 @@ def compute_candidate_score(
     except Exception:
         return None
 
-    sim = image_index.similarity(query, obj)
+    if params.label_only or not params.use_clip:
+        r_sim = _label_similarity(obj, query)
+        sim = type("_Sim", (), {"score": r_sim, "backend": "label_only", "reason": "ablation_label_only"})()
+    else:
+        sim = image_index.similarity(query, obj)
+        r_sim = sim.score
     if obj.obj_id == query.target_object_id:
-        r_sim = max(sim.score, 1.0)
+        r_sim = max(r_sim, 1.0)
         sim_reason = f"{sim.reason},same_obj_id"
     elif normalize_label(obj.label) == query.query_label:
-        r_sim = max(sim.score, 0.95)
+        r_sim = max(r_sim, 0.95)
         sim_reason = f"{sim.reason},same_label"
     else:
-        r_sim = sim.score
         sim_reason = sim.reason
 
-    r_cfd = relation_confidence(obj, query)
+    r_cfd = relation_confidence(obj, query) if params.use_cooccur else 0.0
     stability = max(0.0, min(1.0, float(obj.stability if obj.stability is not None else 0.5)))
     d_days = delta_days(obj, state_index)
-    g_ts = math.exp(-(params.time_lambda * d_days) / (1.0 + params.kappa * stability))
+    g_ts = 1.0 if not params.use_time_decay else math.exp(
+        -(params.time_lambda * d_days) / (1.0 + params.kappa * stability)
+    )
     base = params.beta1 * r_sim + params.beta2 * r_cfd
     exist_prob = max(0.0, min(1.0, float(obj.exist_prob if obj.exist_prob is not None else 1.0)))
     s_rag = max(0.0, min(1.0, base * g_ts * exist_prob))
-    s_agent = agent_prior(obj, query)
-    w_agent = max(params.agent_w_min, math.exp(-params.agent_k * max(0, exploration_round)))
+    s_agent = agent_prior(obj, query) if params.use_agent else 0.0
+    w_agent = 0.0 if not params.use_agent else max(params.agent_w_min, math.exp(-params.agent_k * max(0, exploration_round)))
     w_rag = 1.0 - w_agent
     s_final = w_rag * s_rag + w_agent * s_agent
     if s_final <= 0:
@@ -178,6 +209,10 @@ def compute_candidate_score(
         w_agent=round(w_agent, 6),
         w_rag=round(w_rag, 6),
         S_final=round(s_final, 6),
+        stability=round(stability, 6),
+        exist_prob=round(exist_prob, 6),
+        negative_feedback_count=int((obj.cooccur_stats or {}).get("negative_feedback_count", 0) or 0),
+        stability_bucket=stability_bucket(stability),
         query_modality=image_index.query_modality(query),
         sim_backend=sim.backend,
         reason=sim_reason,
@@ -238,4 +273,3 @@ def apply_negative_feedback(floors: List[Floor], obj_id: str, params: Optional[F
 
 def candidates_to_dict(candidates: List[CandidateScore]) -> List[Dict[str, Any]]:
     return [asdict(c) for c in candidates]
-

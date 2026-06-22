@@ -241,6 +241,44 @@ class RemoteOpenVocabDetector:
         response.raise_for_status()
         return response.json()
 
+    def clip_text_image_similarity(
+        self,
+        text: str,
+        image_embeddings: List[List[float]],
+        *,
+        ids: Optional[List[str]] = None,
+        labels: Optional[List[str]] = None,
+        top_k: int = 20,
+        min_score: float = 0.0,
+        clip_model: Optional[str] = None,
+        clip_local_files_only: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        payload: Dict[str, Any] = {
+            "text": text,
+            "image_embeddings": image_embeddings,
+            "ids": ids,
+            "labels": labels,
+            "top_k": int(top_k),
+            "min_score": float(min_score),
+        }
+        selected_clip_model = clip_model or self.config.clip_model
+        if selected_clip_model:
+            payload["clip_model"] = selected_clip_model
+        selected_local_only = (
+            self.config.clip_local_files_only
+            if clip_local_files_only is None
+            else bool(clip_local_files_only)
+        )
+        if selected_local_only is not None:
+            payload["clip_local_files_only"] = selected_local_only
+        response = requests.post(
+            f"{self.base_url}/v1/clip/text_image_similarity",
+            json=payload,
+            timeout=self.config.request_timeout,
+        )
+        _raise_for_remote_error(response)
+        return response.json().get("results", [])
+
     def detect(
         self,
         rgb: np.ndarray,

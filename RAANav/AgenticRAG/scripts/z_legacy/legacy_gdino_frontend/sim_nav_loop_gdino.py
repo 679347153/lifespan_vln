@@ -578,8 +578,12 @@ def run_sim_nav_loop(
             if str(os.environ.get("RAANAV_DISABLE_CLIP", "")).strip().lower() in {"1", "true", "yes", "y", "on"}:
                 agent_y = float(agent.get_position()[1])
                 floor_y_threshold = 1.5
-                query = query_text.strip().lower()
+                query = query_text.strip().lower().replace(" ", "_")
+                remote_min_score = float(os.environ.get("REMOTE_VISION_CLIP_TEXT_MIN_SCORE", "0.65"))
                 fallback_hits: List[Tuple[str, float]] = []
+                emb_ids: List[str] = []
+                emb_labels: List[str] = []
+                emb_values: List[List[float]] = []
                 for fl in floors_history:
                     for rm in fl.rooms:
                         for o in rm.objects:
@@ -587,9 +591,39 @@ def run_sim_nav_loop(
                                 continue
                             if o.pos_3d and abs(float(o.pos_3d[1]) - agent_y) > floor_y_threshold:
                                 continue
-                            label = str(o.label).strip().lower()
+                            label = str(o.label).strip().lower().replace(" ", "_")
                             if label == query:
                                 fallback_hits.append((o.obj_id, 1.0))
+                            emb = getattr(o, "clip_embedding", None)
+                            if isinstance(emb, list) and emb:
+                                emb_ids.append(str(o.obj_id))
+                                emb_labels.append(str(o.label))
+                                emb_values.append([float(v) for v in emb])
+                if emb_values and detector is not None and hasattr(detector, "clip_text_image_similarity"):
+                    try:
+                        remote_hits = detector.clip_text_image_similarity(
+                            query_text,
+                            emb_values,
+                            ids=emb_ids,
+                            labels=emb_labels,
+                            top_k=max(20, len(emb_values)),
+                            min_score=remote_min_score,
+                        )
+                        scored = {oid: score for oid, score in fallback_hits}
+                        for hit in remote_hits:
+                            oid = str(hit.get("id", ""))
+                            if not oid:
+                                continue
+                            scored[oid] = max(float(hit.get("score", 0.0)), scored.get(oid, 0.0))
+                        results = sorted(scored.items(), key=lambda item: (-item[1], item[0]))
+                        if remote_hits:
+                            print(
+                                f"  [Remote CLIP] text-image hits={len(remote_hits)} "
+                                f"/ {len(emb_values)} (min={remote_min_score:.2f})"
+                            )
+                        return results
+                    except Exception as e:
+                        print(f"  [Remote CLIP] text-image search failed: {e}; fallback to exact label")
                 return fallback_hits
 
             import torch as _torch

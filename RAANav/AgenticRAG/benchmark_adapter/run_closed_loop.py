@@ -34,6 +34,62 @@ from .memory_builder import build_memory_from_seen_layouts
 from .offline_eval import _aggregate_group, _iter_episode_paths, _safe_json_value, load_episodes_for_args
 
 
+ABLATION_CHOICES = {
+    "no_memory",
+    "no_agent",
+    "no_time_decay",
+    "no_cooccur",
+    "no_negative_feedback",
+    "no_clip",
+    "label_only",
+}
+
+
+def _ablation_set(args: argparse.Namespace) -> set[str]:
+    values = getattr(args, "ablation", None) or []
+    return {str(v).strip() for v in values if str(v).strip()}
+
+
+def _fusion_params_for_args(args: argparse.Namespace) -> FusionParams:
+    ablations = _ablation_set(args)
+    return FusionParams(
+        use_agent="no_agent" not in ablations,
+        use_time_decay="no_time_decay" not in ablations,
+        use_cooccur="no_cooccur" not in ablations,
+        use_clip="no_clip" not in ablations and "label_only" not in ablations,
+        label_only="label_only" in ablations or "no_clip" in ablations,
+    )
+
+
+def _memory_snapshot_dict(floors: Any, episode: Episode, ablations: set[str]) -> Dict[str, Any]:
+    objects = []
+    for floor in floors or []:
+        for room in floor.rooms:
+            for obj in room.objects:
+                objects.append(obj.to_dict())
+    return {
+        "scene_name": episode.scene_name,
+        "layout_id": episode.layout_id,
+        "state_index": episode.state_index,
+        "seen_layout_count_before": episode.seen_layout_count_before,
+        "ablation": sorted(ablations),
+        "n_objects": len(objects),
+        "floors": [floor.to_dict() for floor in floors or []],
+    }
+
+
+def _write_memory_snapshot(output_dir: Path, episode: Episode, floors: Any, ablations: set[str]) -> Path:
+    safe_layout = str(episode.layout_id).replace("/", "_").replace("\\", "_")
+    path = (
+        output_dir
+        / "memory_snapshots"
+        / episode.scene_name
+        / f"state_{int(episode.state_index):03d}_seen_{int(episode.seen_layout_count_before):03d}_{safe_layout}.json"
+    )
+    write_json(path, _memory_snapshot_dict(floors, episode, ablations))
+    return path
+
+
 def _pose_from_candidate(candidate: Dict[str, Any], target_pose: Pose) -> Pose:
     return Pose(
         x=float(candidate["world_x"]),
@@ -109,16 +165,20 @@ def run_episode_closed_loop(
     start_time = time.time()
     cache = memory_cache if memory_cache is not None else {}
     cache_key = (episode.scene_name, episode.state_index, episode.seen_layout_count_before)
+    ablations = _ablation_set(args)
     if cache_key not in cache:
-        cache[cache_key] = build_memory_from_seen_layouts(
-            index,
-            episode.scene_name,
-            episode.state_index,
-            episode.seen_layout_count_before,
-        )
+        if "no_memory" in ablations:
+            cache[cache_key] = []
+        else:
+            cache[cache_key] = build_memory_from_seen_layouts(
+                index,
+                episode.scene_name,
+                episode.state_index,
+                episode.seen_layout_count_before,
+            )
     memory_floors = cache[cache_key]
     image_index = ImageGoalIndex(images_dir=args.images_dir)
-    params = FusionParams()
+    params = _fusion_params_for_args(args)
 
     adapter = _try_adapter(episode, args)
     current_pose = episode.start_pose
@@ -179,18 +239,19 @@ def run_episode_closed_loop(
                 if dist_to_goal <= float(subtask.success_radius):
                     subtask_found = True
                     break
-                feedback = apply_negative_feedback(memory_floors, candidate.obj_id, params=params)
-                feedback.update(
-                    {
-                        "episode_id": episode.episode_id,
-                        "subtask_id": subtask.subtask_id,
-                        "round": round_idx,
-                        "candidate_point": [candidate_pose.x, candidate_pose.z],
-                        "distance_to_goal": dist_to_goal,
-                    }
-                )
-                miss_feedback.append(_safe_json_value(feedback))
-                failure_feedback.append(_safe_json_value(feedback))
+                if "no_negative_feedback" not in ablations:
+                    feedback = apply_negative_feedback(memory_floors, candidate.obj_id, params=params)
+                    feedback.update(
+                        {
+                            "episode_id": episode.episode_id,
+                            "subtask_id": subtask.subtask_id,
+                            "round": round_idx,
+                            "candidate_point": [candidate_pose.x, candidate_pose.z],
+                            "distance_to_goal": dist_to_goal,
+                        }
+                    )
+                    miss_feedback.append(_safe_json_value(feedback))
+                    failure_feedback.append(_safe_json_value(feedback))
 
             if subtask_found:
                 found_count += 1
@@ -247,6 +308,10 @@ def run_episode_closed_loop(
                         "ghr5": any(d <= float(subtask.success_radius) for d in dists[:5]),
                         "min_dist": min(dists) if dists else None,
                         "final_dist": final_dist,
+                        "top_stability_bucket": last_candidates[0].get("stability_bucket") if last_candidates else None,
+                        "top_stability": last_candidates[0].get("stability") if last_candidates else None,
+                        "top_sim_backend": last_candidates[0].get("sim_backend") if last_candidates else None,
+                        "ablation": sorted(ablations),
                         "visited_points": visited_points,
                         "peaks": last_candidates,
                         "failure_feedback": miss_feedback,
@@ -270,6 +335,7 @@ def run_episode_closed_loop(
         subtask_traces=traces,
         metadata={
             "runner": "RAANav.benchmark_adapter.run_closed_loop",
+            "ablation": sorted(ablations),
             "habitat_active": False,  # set per-candidate in candidate_traces; adapter is closed now
             "memory_metrics": {
                 "dynamic_memory_correct": found_count,
@@ -296,6 +362,13 @@ def _summaries(records: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str,
         grouped_type["all"].append(r)
     for key, items in sorted(grouped_type.items()):
         by_type[key] = _aggregate(items)
+    grouped_stability: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in records:
+        bucket = str(r.get("top_stability_bucket") or "unknown")
+        grouped_stability[bucket].append(r)
+    by_type["by_stability"] = {
+        key: _aggregate(items) for key, items in sorted(grouped_stability.items())
+    }
     grouped_seen: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     for r in records:
         grouped_seen[int(r.get("seen_layout_count_before", 0))].append(r)
@@ -335,13 +408,18 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     diag_path = output_dir / "memory_diagnostics.jsonl"
     candidate_path = output_dir / "candidate_traces.jsonl"
     feedback_path = output_dir / "failure_feedback.jsonl"
+    snapshot_index_path = output_dir / "memory_snapshot_index.jsonl"
 
     memory_cache: Dict[Tuple[str, int, int], Any] = {}
     all_diagnostics: List[Dict[str, Any]] = []
     warnings: List[str] = []
     feedback_count = 0
+    ablations = _ablation_set(args)
+    unknown_ablations = sorted(ablations - ABLATION_CHOICES)
+    if unknown_ablations:
+        raise ValueError(f"Unknown ablation(s): {unknown_ablations}. Valid choices: {sorted(ABLATION_CHOICES)}")
 
-    with run_path.open("w", encoding="utf-8") as run_f, diag_path.open("w", encoding="utf-8") as diag_f, candidate_path.open("w", encoding="utf-8") as cand_f, feedback_path.open("w", encoding="utf-8") as fb_f:
+    with run_path.open("w", encoding="utf-8") as run_f, diag_path.open("w", encoding="utf-8") as diag_f, candidate_path.open("w", encoding="utf-8") as cand_f, feedback_path.open("w", encoding="utf-8") as fb_f, snapshot_index_path.open("w", encoding="utf-8") as snap_f:
         for ep_path in episode_paths:
             episode = read_episode(ep_path)
             warnings.extend(index.validate_episode_layout(episode))
@@ -360,10 +438,29 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             for record in feedback:
                 feedback_count += 1
                 fb_f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if bool(args.write_memory_snapshots):
+                key = (episode.scene_name, episode.state_index, episode.seen_layout_count_before)
+                snapshot_path = _write_memory_snapshot(output_dir, episode, memory_cache.get(key, []), ablations)
+                snap_f.write(
+                    json.dumps(
+                        {
+                            "episode_id": episode.episode_id,
+                            "scene_name": episode.scene_name,
+                            "layout_id": episode.layout_id,
+                            "state_index": episode.state_index,
+                            "seen_layout_count_before": episode.seen_layout_count_before,
+                            "path": str(snapshot_path),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
 
     memory_summary, memory_by_type, memory_curve = _summaries(all_diagnostics)
+    memory_by_stability = memory_by_type.pop("by_stability", {})
     write_json(output_dir / "memory_summary.json", memory_summary)
     write_json(output_dir / "memory_by_task_type.json", memory_by_type)
+    write_json(output_dir / "memory_by_stability.json", memory_by_stability)
     write_json(output_dir / "memory_exploration_curve.json", memory_curve)
     write_json(output_dir / "adapter_warnings.json", {"warnings": warnings, "warning_count": len(warnings)})
 
@@ -384,8 +481,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "memory_diagnostics": str(diag_path),
         "candidate_traces": str(candidate_path),
         "failure_feedback": str(feedback_path),
+        "memory_snapshot_index": str(snapshot_index_path),
         "failure_feedback_count": feedback_count,
+        "ablation": sorted(ablations),
         "memory_summary": memory_summary,
+        "memory_by_stability": memory_by_stability,
         "benchmark_summary": benchmark_result.get("summary", {}),
         "warnings": len(warnings),
     }
@@ -408,6 +508,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--objects-dir", default="objects")
     parser.add_argument("--load-layout-objects", action="store_true")
     parser.add_argument("--euclidean-fallback", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--ablation", action="append", choices=sorted(ABLATION_CHOICES), default=[])
+    parser.add_argument("--write-memory-snapshots", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args(argv)
 
 
@@ -417,4 +519,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-
