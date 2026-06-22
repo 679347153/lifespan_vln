@@ -193,13 +193,28 @@ class HabitatLayoutAdapter:
         pf = self.pathfinder
         s = pose_to_array(start) if isinstance(start, Pose) else np.asarray(start[:3], dtype=np.float32)
         g = pose_to_array(goal) if isinstance(goal, Pose) else np.asarray(goal[:3], dtype=np.float32)
-        try:
-            distance = pf.geodesic_distance(s, g)
-        except TypeError:
-            distance = pf.geodesic_distance(s, [g])
-        if distance is None or not np.isfinite(distance):
+        if hasattr(pf, "geodesic_distance"):
+            try:
+                distance = pf.geodesic_distance(s, g)
+            except TypeError:
+                distance = pf.geodesic_distance(s, [g])
+            if distance is None or not np.isfinite(distance):
+                return float("inf")
+            return float(distance)
+
+        if habitat_sim is None or not hasattr(habitat_sim, "ShortestPath"):
             return float("inf")
-        return float(distance)
+        try:
+            path = habitat_sim.ShortestPath()
+            path.requested_start = s
+            path.requested_end = g
+            found = pf.find_path(path)
+            distance = getattr(path, "geodesic_distance", float("inf"))
+            if not found or distance is None or not np.isfinite(distance):
+                return float("inf")
+            return float(distance)
+        except Exception:
+            return float("inf")
 
     def shortest_path_sum(self, start_pose: Pose, subtasks: Iterable[Subtask]) -> float:
         total = 0.0
