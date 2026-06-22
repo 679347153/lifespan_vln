@@ -19,7 +19,7 @@ from benchmark.schemas import (
     to_json_dict,
 )
 
-from .common import as_path, euclidean_pose, repo_root, write_json
+from .common import agentic_root, as_path, euclidean_pose, repo_root, write_json
 from .dataset_index import DatasetIndex
 from .episode_to_queries import query_from_subtask
 from .lightweight_search import SearchResult, search_memory
@@ -251,17 +251,53 @@ def summarize_diagnostics(records: List[Dict[str, Any]]) -> Tuple[Dict[str, Any]
 
 
 def load_episodes_for_args(args: argparse.Namespace, index: DatasetIndex) -> Tuple[Path, List[Path]]:
+    tried_roots: List[Path] = []
     if args.episodes:
         root = as_path(args.episodes)
     else:
         root = index.episodes_root / args.split
+    tried_roots.append(root)
     paths = _iter_episode_paths(root)
+    if not paths and not Path(root).is_absolute():
+        alt_root = agentic_root() / root
+        if alt_root not in tried_roots:
+            tried_roots.append(alt_root)
+            paths = _iter_episode_paths(alt_root)
+            if paths:
+                root = alt_root
+    if not paths and str(root).startswith(str(repo_root())):
+        try:
+            rel = root.relative_to(repo_root())
+            alt_root = agentic_root() / rel
+            if alt_root not in tried_roots:
+                tried_roots.append(alt_root)
+                paths = _iter_episode_paths(alt_root)
+                if paths:
+                    root = alt_root
+        except ValueError:
+            pass
     if args.scene:
-        paths = [p for p in paths if f"{args.scene}" in p.parts]
+        filtered = [p for p in paths if f"{args.scene}" in p.parts]
+        if not filtered and str(root).startswith(str(repo_root())):
+            try:
+                rel = root.relative_to(repo_root())
+                alt_root = agentic_root() / rel
+                if alt_root not in tried_roots:
+                    tried_roots.append(alt_root)
+                alt_paths = _iter_episode_paths(alt_root)
+                filtered = [p for p in alt_paths if f"{args.scene}" in p.parts]
+                if filtered:
+                    root = alt_root
+            except ValueError:
+                pass
+        paths = filtered
     if args.limit and args.limit > 0:
         paths = paths[: args.limit]
     if not paths:
-        raise FileNotFoundError(f"No episode JSON files found for root={root}, scene={args.scene!r}")
+        tried = ", ".join(str(p) for p in tried_roots)
+        raise FileNotFoundError(
+            f"No episode JSON files found for scene={args.scene!r}. Tried root(s): {tried}"
+        )
     return root, paths
 
 
@@ -340,4 +376,3 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -18,7 +18,14 @@ def as_path(path: Union[str, Path], base: Optional[Path] = None) -> Path:
     p = Path(path)
     if p.is_absolute():
         return p
-    return (base or repo_root()) / p
+    primary = (base or repo_root()) / p
+    if primary.exists():
+        return primary
+    if base is None:
+        secondary = agentic_root() / p
+        if secondary.exists():
+            return secondary
+    return primary
 
 
 def read_json(path: Union[str, Path]) -> Dict[str, Any]:
