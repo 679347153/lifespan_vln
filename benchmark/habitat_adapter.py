@@ -42,6 +42,14 @@ def _yaw_to_quat(yaw_deg: float) -> Any:
     return mn.Quaternion.rotation(mn.Rad(math.radians(float(yaw_deg))), mn.Vector3(0.0, 1.0, 0.0))
 
 
+def _yaw_to_degrees(yaw: float) -> float:
+    """Accept either radians-like or degrees-like yaw values."""
+    value = float(yaw)
+    if abs(value) <= (2.0 * math.pi + 1e-6):
+        return math.degrees(value)
+    return value
+
+
 def _resolve_template_handle(template_mgr: Any, model_id: str) -> Optional[str]:
     candidates = [model_id]
     if not model_id.endswith(".object_config.json"):
@@ -78,12 +86,18 @@ class HabitatLayoutAdapter:
         enable_physics: bool = False,
         load_layout_objects: bool = True,
         require_habitat: bool = True,
+        sensor_width: int = 64,
+        sensor_height: int = 64,
+        enable_depth_sensor: bool = False,
     ) -> None:
         self.scene_name = scene_name
         self.layout_path = layout_path
         self.data_dir = Path(data_dir)
         self.objects_dir = Path(objects_dir)
         self.enable_physics = bool(enable_physics)
+        self.sensor_width = int(sensor_width)
+        self.sensor_height = int(sensor_height)
+        self.enable_depth_sensor = bool(enable_depth_sensor)
         self.sim = None
         self.scene_paths = resolve_scene_paths(scene_name, require_semantic=False, root=self.data_dir)
         if habitat_sim is None:
@@ -118,11 +132,20 @@ class HabitatLayoutAdapter:
         sensor = habitat_sim.CameraSensorSpec()
         sensor.uuid = "color"
         sensor.sensor_type = habitat_sim.SensorType.COLOR
-        sensor.resolution = [64, 64]
+        sensor.resolution = [self.sensor_height, self.sensor_width]
         sensor.position = [0.0, 1.35, 0.0]
 
+        sensors = [sensor]
+        if self.enable_depth_sensor:
+            depth_sensor = habitat_sim.CameraSensorSpec()
+            depth_sensor.uuid = "depth"
+            depth_sensor.sensor_type = habitat_sim.SensorType.DEPTH
+            depth_sensor.resolution = [self.sensor_height, self.sensor_width]
+            depth_sensor.position = [0.0, 1.35, 0.0]
+            sensors.append(depth_sensor)
+
         agent_cfg = habitat_sim.agent.AgentConfiguration()
-        agent_cfg.sensor_specifications = [sensor]
+        agent_cfg.sensor_specifications = sensors
         return habitat_sim.Simulator(habitat_sim.Configuration(sim_cfg, [agent_cfg]))
 
     def _load_templates(self) -> None:
@@ -188,6 +211,57 @@ class HabitatLayoutAdapter:
             yaw = rng.uniform(-math.pi, math.pi)
             return Pose(float(point[0]), float(point[1]), float(point[2]), float(yaw))
         raise RuntimeError(f"Could not sample a navigable start pose for scene {self.scene_name}")
+
+    def set_agent_pose(self, pose: Pose) -> None:
+        if self.sim is None or habitat_sim is None:
+            return
+        state = habitat_sim.AgentState()
+        state.position = np.asarray([pose.x, pose.y, pose.z], dtype=np.float32)
+        quat = _yaw_to_quat(_yaw_to_degrees(pose.yaw))
+        if quat is not None:
+            state.rotation = quat
+        self.sim.get_agent(0).set_state(state)
+
+    def get_agent_pose(self) -> Pose:
+        if self.sim is None:
+            raise RuntimeError("Habitat simulator is not available")
+        state = self.sim.get_agent(0).get_state()
+        pos = state.position
+        return Pose(float(pos[0]), float(pos[1]), float(pos[2]), 0.0)
+
+    def observe(self, pose: Optional[Pose] = None) -> Dict[str, Any]:
+        if self.sim is None:
+            raise RuntimeError("Habitat simulator is not available")
+        if pose is not None:
+            self.set_agent_pose(pose)
+        return dict(self.sim.get_sensor_observations())
+
+    def snap_pose(self, pose: Pose) -> Pose:
+        if self.sim is None:
+            return pose
+        point = np.asarray([pose.x, pose.y, pose.z], dtype=np.float32)
+        snapped = self.pathfinder.snap_point(point)
+        if snapped is None or np.any(np.isnan(snapped)):
+            return pose
+        return Pose(float(snapped[0]), float(snapped[1]), float(snapped[2]), pose.yaw)
+
+    def shortest_path_points(self, start: Pose, goal: Pose) -> List[Pose]:
+        if self.sim is None or habitat_sim is None or not hasattr(habitat_sim, "ShortestPath"):
+            return [goal]
+        path = habitat_sim.ShortestPath()
+        path.requested_start = pose_to_array(start)
+        path.requested_end = pose_to_array(goal)
+        try:
+            found = self.pathfinder.find_path(path)
+        except Exception:
+            found = False
+        if not found:
+            return [goal]
+        points = getattr(path, "points", None) or []
+        out: List[Pose] = []
+        for point in points[1:]:
+            out.append(Pose(float(point[0]), float(point[1]), float(point[2]), goal.yaw))
+        return out or [goal]
 
     def geodesic_distance(self, start: Pose | Sequence[float], goal: Pose | Sequence[float]) -> float:
         pf = self.pathfinder
