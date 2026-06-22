@@ -128,6 +128,28 @@ python remote_vision_server/test_client.py \
 cd ~/Downloads/lifespan_vln/RAANav/AgenticRAG
 ```
 
+当前脚本已经做了保护：只要使用 `--perception-backend remote`、`--remote-vision-base-url` 或 `--remote-vision-use-ssh-tunnel`，并且没有显式指定本地 CLIP，脚本会自动：
+
+```bash
+REMOTE_VISION_RETURN_CLIP=1
+RAANAV_REMOTE_CLIP_EMBEDDING=1
+RAANAV_DISABLE_CLIP=1
+```
+
+因此你之前这类短命令现在也不会再让工作站加载 `openai/clip-vit-base-patch32`：
+
+```bash
+python scripts/z_legacy/legacy_gdino_frontend/sim_nav_loop_gdino.py \
+  --scene-dir ../../hm3d/minival/00808-y9hTuugGdiq \
+  --dataset-config ../../hm3d/hm3d_val_scene_dataset_config.json \
+  --target chair \
+  --output-dir RAG_Graph/remote_vision_nav_smoke \
+  --max-steps 5 \
+  --n-views 4 \
+  --perception-backend remote \
+  --remote-vision-base-url http://127.0.0.1:50220
+```
+
 推荐命令：服务器算图像 CLIP，工作站不加载本地 CLIP。
 
 ```bash
@@ -242,4 +264,3 @@ sudo apt install sshpass
 ```bash
 REMOTE_VISION_CLIP_MODEL_PATH=/home/ma-user/work/zhangWei/mtu3d/data/trans/clip-vit-large-patch14
 ```
-

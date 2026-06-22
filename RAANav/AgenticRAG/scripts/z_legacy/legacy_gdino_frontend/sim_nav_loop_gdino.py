@@ -1425,9 +1425,33 @@ def main():
         os.environ["REMOTE_VISION_LOCAL_PORT"] = str(args.remote_vision_local_port)
     if args.remote_vision_remote_port is not None:
         os.environ["REMOTE_VISION_REMOTE_PORT"] = str(args.remote_vision_remote_port)
+
+    remote_backend_requested = (
+        args.perception_backend == "remote"
+        or bool(args.remote_vision_base_url)
+        or bool(args.remote_vision_use_ssh_tunnel)
+        or os.environ.get("RAANAV_PERCEPTION_BACKEND") == "remote"
+        or bool(os.environ.get("REMOTE_VISION_BASE_URL"))
+        or str(os.environ.get("REMOTE_VISION_USE_SSH_TUNNEL", "")).strip().lower()
+        in {"1", "true", "yes", "y", "on"}
+    )
+    local_clip_requested = (
+        bool(args.clip_model_path)
+        or bool(args.clip_model_name)
+        or bool(args.clip_online)
+        or bool(os.environ.get("RAANAV_CLIP_MODEL_PATH"))
+        or bool(os.environ.get("RAANAV_CLIP_MODEL"))
+    )
     if args.remote_clip:
         os.environ["REMOTE_VISION_RETURN_CLIP"] = "1"
         os.environ["RAANAV_REMOTE_CLIP_EMBEDDING"] = "1"
+        if not local_clip_requested:
+            os.environ.setdefault("RAANAV_DISABLE_CLIP", "1")
+    elif remote_backend_requested and not local_clip_requested:
+        os.environ.setdefault("REMOTE_VISION_RETURN_CLIP", "1")
+        os.environ.setdefault("RAANAV_REMOTE_CLIP_EMBEDDING", "1")
+        os.environ.setdefault("RAANAV_DISABLE_CLIP", "1")
+        print("[Remote CLIP] remote perception detected; using server-side CLIP and disabling workstation CLIP.")
     if args.remote_clip_model_path:
         os.environ["REMOTE_VISION_CLIP_MODEL_PATH"] = args.remote_clip_model_path
     if args.remote_clip_model_name:
