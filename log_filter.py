@@ -49,6 +49,27 @@ def _compile_default_rules() -> List[Rule]:
                 flags=re.IGNORECASE,
             ),
         ),
+        Rule(
+            name="magnum_renderer_banner",
+            pattern=re.compile(
+                r"^(Renderer:|OpenGL version:|Using optional features:|Using driver workarounds:)",
+                flags=re.IGNORECASE,
+            ),
+        ),
+        Rule(
+            name="magnum_gl_capability_line",
+            pattern=re.compile(
+                r"^\s*(GL_[A-Z0-9_]+|nv-[a-z0-9-]+|no-[a-z0-9-]+)\s*$",
+                flags=re.IGNORECASE,
+            ),
+        ),
+        Rule(
+            name="magnum_mesh_texture_coord_warning",
+            pattern=re.compile(
+                r"^MeshTools::compile\(\): ignoring Trade::MeshAttribute::TextureCoordinates",
+                flags=re.IGNORECASE,
+            ),
+        ),
     ]
 
 
