@@ -42,6 +42,12 @@ def _yaw_to_quat(yaw_deg: float) -> Any:
     return mn.Quaternion.rotation(mn.Rad(math.radians(float(yaw_deg))), mn.Vector3(0.0, 1.0, 0.0))
 
 
+def _yaw_to_agent_quat_coeffs(yaw_deg: float) -> List[float]:
+    """Habitat AgentState expects quaternion coeffs [x, y, z, w]."""
+    half = math.radians(float(yaw_deg)) / 2.0
+    return [0.0, math.sin(half), 0.0, math.cos(half)]
+
+
 def _yaw_to_degrees(yaw: float) -> float:
     """Accept either radians-like or degrees-like yaw values."""
     value = float(yaw)
@@ -217,9 +223,7 @@ class HabitatLayoutAdapter:
             return
         state = habitat_sim.AgentState()
         state.position = np.asarray([pose.x, pose.y, pose.z], dtype=np.float32)
-        quat = _yaw_to_quat(_yaw_to_degrees(pose.yaw))
-        if quat is not None:
-            state.rotation = quat
+        state.rotation = _yaw_to_agent_quat_coeffs(_yaw_to_degrees(pose.yaw))
         self.sim.get_agent(0).set_state(state)
 
     def get_agent_pose(self) -> Pose:
