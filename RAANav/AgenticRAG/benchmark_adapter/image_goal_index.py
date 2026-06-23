@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from RAANav.AgenticRAG.semantic_map import Object
 
 from .common import as_path, normalize_label, token_overlap
-from .episode_to_queries import QuerySpec
+from .episode_to_queries import QuerySpec, query_label_matches, query_label_similarity
 
 
 @dataclass
@@ -57,7 +57,7 @@ class ImageGoalIndex:
 
     def similarity(self, query: QuerySpec, obj: Object) -> ImageMatch:
         if self.query_modality(query) != "image":
-            score = 1.0 if normalize_label(obj.label) == query.query_label else token_overlap(obj.label, query.query_label)
+            score = 1.0 if query_label_matches(obj.label, query) else query_label_similarity(obj.label, query)
             return ImageMatch(score=max(0.0, min(1.0, score)), backend="text_fallback", reason="non_image_query")
 
         ref = self.reference_stem(query)
@@ -71,6 +71,5 @@ class ImageGoalIndex:
 
         # Last-resort fallback keeps image_goal executable when the reference
         # image or object image is absent.
-        fallback = token_overlap(query.query_label, obj.label)
+        fallback = query_label_similarity(obj.label, query)
         return ImageMatch(score=max(0.0, min(1.0, fallback)), backend="label_fallback", reason="missing_image_or_no_match")
-

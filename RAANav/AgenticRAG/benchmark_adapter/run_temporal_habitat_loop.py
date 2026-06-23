@@ -22,9 +22,15 @@ from benchmark.schemas import (
     to_json_dict,
 )
 
-from .common import as_path, euclidean_2d, normalize_label, token_overlap, write_json
+from .common import as_path, euclidean_2d, normalize_label, write_json
 from .dataset_index import DatasetIndex
-from .episode_to_queries import QuerySpec, query_from_subtask
+from .episode_to_queries import (
+    QuerySpec,
+    aliases_for_label,
+    load_target_name_map,
+    query_from_subtask,
+    query_label_matches,
+)
 from .formal_scoring import CandidateScore, FusionParams, candidates_to_dict, rank_candidates
 from .habitat_vision_loop import HabitatVisionLoop
 from .image_goal_index import ImageGoalIndex
@@ -93,7 +99,12 @@ def _label_for_prompt(value: Any) -> str:
     return normalize_label(value).replace("_", " ")
 
 
-def _collect_prompt_labels(episodes: Iterable[Episode]) -> List[str]:
+def _collect_prompt_labels(
+    episodes: Iterable[Episode],
+    *,
+    target_name_map: Optional[Dict[str, List[str]]] = None,
+    normalize_target_names: bool = True,
+) -> List[str]:
     labels: List[str] = []
     seen = set()
     for label in DEFAULT_DETECT_LABELS:
@@ -107,17 +118,21 @@ def _collect_prompt_labels(episodes: Iterable[Episode]) -> List[str]:
                 subtask.target_object,
                 (subtask.metadata or {}).get("model_id"),
             ):
-                norm = normalize_label(raw)
-                if norm and norm not in seen:
-                    seen.add(norm)
-                    labels.append(_label_for_prompt(norm))
+                for norm in aliases_for_label(
+                    raw,
+                    target_name_map=target_name_map,
+                    normalize_target_names=normalize_target_names,
+                ):
+                    if norm and norm not in seen:
+                        seen.add(norm)
+                        labels.append(_label_for_prompt(norm))
     return labels
 
 
 def _prompt_for_query(query: QuerySpec, global_labels: List[str], memory: SceneMemory, max_labels: int) -> str:
     labels: List[str] = []
     seen = set()
-    for raw in (query.query_label, query.target_object):
+    for raw in [*(query.alias_labels or []), query.query_label, query.target_object]:
         norm = normalize_label(raw)
         if norm and norm not in seen:
             seen.add(norm)
@@ -137,16 +152,37 @@ def _prompt_for_query(query: QuerySpec, global_labels: List[str], memory: SceneM
     return " . ".join(labels[:max_labels])
 
 
-def _target_detected(detections: Iterable[Dict[str, Any]], query: QuerySpec) -> bool:
-    query_label = normalize_label(query.query_label)
-    target = normalize_label(query.target_object)
+def _detection_pos2d(det: Dict[str, Any]) -> Optional[List[float]]:
+    pos = det.get("pos_2d")
+    if isinstance(pos, list) and len(pos) >= 2:
+        return [float(pos[0]), float(pos[1])]
+    if isinstance(pos, dict) and "x" in pos:
+        return [float(pos["x"]), float(pos.get("z", pos.get("y", 0.0)))]
+    pos3 = det.get("pos_3d")
+    if isinstance(pos3, list) and len(pos3) >= 3:
+        return [float(pos3[0]), float(pos3[2])]
+    return None
+
+
+def _target_detected(
+    detections: Iterable[Dict[str, Any]],
+    query: QuerySpec,
+    *,
+    subtask: Optional[Subtask] = None,
+    confirmation_mode: str = "spatial",
+    spatial_margin: float = 1.0,
+) -> bool:
     for det in detections:
-        label = normalize_label(det.get("label"))
-        if not label:
+        if not query_label_matches(det.get("label"), query):
             continue
-        if label in {query_label, target}:
+        if confirmation_mode == "semantic" or subtask is None:
             return True
-        if token_overlap(label, query_label) >= 0.6:
+        det_pos = _detection_pos2d(det)
+        if det_pos is None:
+            continue
+        target_pos = [float(subtask.target_position.x), float(subtask.target_position.z)]
+        threshold = max(float(subtask.success_radius), 0.0) + max(0.0, float(spatial_margin))
+        if euclidean_2d(det_pos, target_pos) <= threshold:
             return True
     return False
 
@@ -195,7 +231,10 @@ def _rank_with_remote_clip(
     objects = [obj for obj in memory.objects() if obj.clip_embedding and obj.pos_2d]
     if not objects:
         return candidates
-    text = query.language_prompt or query.query_label.replace("_", " ")
+    if query.language_prompt:
+        text = query.language_prompt
+    else:
+        text = " . ".join(alias.replace("_", " ") for alias in (query.alias_labels or [query.query_label])[:4])
     sims = loop.detector.clip_text_image_similarity(
         text,
         [obj.clip_embedding for obj in objects],
@@ -276,7 +315,12 @@ def run_episode_temporal(
     feedback_records: List[Dict[str, Any]] = []
 
     for subtask in episode.subtasks:
-        query = query_from_subtask(episode, subtask)
+        query = query_from_subtask(
+            episode,
+            subtask,
+            target_name_map=args.target_name_map_data,
+            normalize_target_names=bool(args.normalize_target_names),
+        )
         path_length = 0.0
         subtask_steps = 0
         perception_found = False
@@ -303,7 +347,13 @@ def run_episode_temporal(
                 step=total_steps,
             ):
                 memory_events.append(event.to_dict())
-            if _target_detected(obs.detections, query):
+            if _target_detected(
+                obs.detections,
+                query,
+                subtask=subtask,
+                confirmation_mode=args.target_confirmation_mode,
+                spatial_margin=args.target_confirmation_margin,
+            ):
                 perception_found = True
                 final_pose = loop.current_pose or current_pose
                 break
@@ -370,7 +420,13 @@ def run_episode_temporal(
                 step=total_steps,
             ):
                 memory_events.append(event.to_dict())
-            if _target_detected(post_obs.detections, query):
+            if _target_detected(
+                post_obs.detections,
+                query,
+                subtask=subtask,
+                confirmation_mode=args.target_confirmation_mode,
+                spatial_margin=args.target_confirmation_margin,
+            ):
                 perception_found = True
                 break
             if candidates:
@@ -401,6 +457,8 @@ def run_episode_temporal(
                 "perception_found": perception_found,
                 "benchmark_distance_to_goal": final_dist,
                 "fallback_count": fallback_count,
+                "target_confirmation_mode": args.target_confirmation_mode,
+                "target_confirmation_margin": args.target_confirmation_margin,
                 "runner": "temporal_habitat_loop",
             },
         )
@@ -430,9 +488,12 @@ def run_episode_temporal(
                     "task_type": subtask.task_type,
                     "target_object": subtask.target_object,
                     "query_label": query.query_label,
+                    "alias_labels": query.alias_labels,
                     "query_modality": image_index.query_modality(query),
                     "perception_found": perception_found,
                     "found": benchmark_success,
+                    "target_confirmation_mode": args.target_confirmation_mode,
+                    "target_confirmation_margin": args.target_confirmation_margin,
                     "sss": trace.steps,
                     "mra": bool(dists and dists[0] <= float(subtask.success_radius)),
                     "ghr3": any(d <= float(subtask.success_radius) for d in dists[:3]),
@@ -502,7 +563,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     episodes_root, episodes = _load_sorted_episodes(args, index)
     output_dir = as_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    global_labels = _collect_prompt_labels(episodes)
+    args.target_name_map_data = load_target_name_map(args.target_name_map)
+    global_labels = _collect_prompt_labels(
+        episodes,
+        target_name_map=args.target_name_map_data,
+        normalize_target_names=bool(args.normalize_target_names),
+    )
 
     run_path = output_dir / "run.jsonl"
     diag_path = output_dir / "memory_diagnostics.jsonl"
@@ -638,6 +704,13 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             write_json(output_dir / "scene_memory" / scene_name / "scene_memory_final.json", memory.to_dict())
         write_json(output_dir / "temporal_summary.json", _temporal_summary(all_diagnostics))
         write_json(output_dir / "adapter_warnings.json", {"warnings": warnings, "warning_count": len(warnings)})
+        write_json(
+            output_dir / "target_name_normalization.json",
+            {
+                "normalize_target_names": bool(args.normalize_target_names),
+                "target_name_map": args.target_name_map_data,
+            },
+        )
         if loop is not None:
             write_json(output_dir / "perception_summary.json", loop.perception_summary())
 
@@ -707,6 +780,29 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-depth", type=float, default=5.0)
     parser.add_argument("--step-size", type=float, default=0.5)
     parser.add_argument("--clip-min-score", type=float, default=0.2)
+    parser.add_argument(
+        "--target-name-map",
+        default=None,
+        help="Optional JSON object mapping raw target names to canonical labels or alias lists.",
+    )
+    parser.add_argument(
+        "--normalize-target-names",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable built-in target aliases such as chess_set->chess and camera_01->camera.",
+    )
+    parser.add_argument(
+        "--target-confirmation-mode",
+        choices=("spatial", "semantic"),
+        default="spatial",
+        help="Use spatial target confirmation for benchmark runs, or semantic for legacy label-only confirmation.",
+    )
+    parser.add_argument(
+        "--target-confirmation-margin",
+        type=float,
+        default=1.0,
+        help="Extra meters added to subtask.success_radius when spatially confirming a target detection.",
+    )
     return parser.parse_args(argv)
 
 

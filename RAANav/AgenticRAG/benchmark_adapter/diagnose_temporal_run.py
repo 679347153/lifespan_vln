@@ -123,17 +123,37 @@ def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     final_dists = [_safe_float(r.get("final_dist")) for r in records]
     min_dists = [_safe_float(r.get("min_dist")) for r in records]
     fallback_counts = [_safe_float(r.get("fallback_count"), 0.0) for r in records]
+    subtasks = len(records)
+    found = sum(1 for r in records if bool(r.get("found")))
+    perception_found = sum(1 for r in records if bool(r.get("perception_found")))
+    mra = sum(1 for r in records if bool(r.get("mra")))
+    ghr3 = sum(1 for r in records if bool(r.get("ghr3")))
+    ghr5 = sum(1 for r in records if bool(r.get("ghr5")))
+    avg_final_dist = _mean(final_dists)
+    avg_candidate_min_dist = _mean(min_dists)
     return {
-        "subtasks": len(records),
-        "found": sum(1 for r in records if bool(r.get("found"))),
-        "perception_found": sum(1 for r in records if bool(r.get("perception_found"))),
-        "mra": sum(1 for r in records if bool(r.get("mra"))),
-        "ghr3": sum(1 for r in records if bool(r.get("ghr3"))),
-        "ghr5": sum(1 for r in records if bool(r.get("ghr5"))),
-        "avg_final_dist": _mean(final_dists),
+        "subtasks": subtasks,
+        "found": found,
+        "found_rate": round(found / subtasks, 6) if subtasks else None,
+        "perception_found": perception_found,
+        "perception_found_rate": round(perception_found / subtasks, 6) if subtasks else None,
+        "perception_to_benchmark_found_gap": perception_found - found,
+        "mra": mra,
+        "mra_rate": round(mra / subtasks, 6) if subtasks else None,
+        "ghr3": ghr3,
+        "ghr3_rate": round(ghr3 / subtasks, 6) if subtasks else None,
+        "ghr5": ghr5,
+        "ghr5_rate": round(ghr5 / subtasks, 6) if subtasks else None,
+        "ghr5_to_found_gap": ghr5 - found,
+        "avg_final_dist": avg_final_dist,
         "best_final_dist": min([v for v in final_dists if v is not None], default=None),
-        "avg_candidate_min_dist": _mean(min_dists),
+        "avg_candidate_min_dist": avg_candidate_min_dist,
         "best_candidate_min_dist": min([v for v in min_dists if v is not None], default=None),
+        "avg_final_minus_candidate_min_dist": (
+            round(float(avg_final_dist) - float(avg_candidate_min_dist), 6)
+            if avg_final_dist is not None and avg_candidate_min_dist is not None
+            else None
+        ),
         "avg_fallback_count": _mean(fallback_counts),
         "by_task_type": _count_by(records, "task_type"),
         "by_query_modality": _count_by(records, "query_modality"),
@@ -152,6 +172,101 @@ def _memory_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _rate_value(record: Dict[str, Any], key: str) -> Optional[float]:
+    value = _safe_float(record.get(key))
+    return value if value is not None else None
+
+
+def _temporal_trend(temporal_summary: Dict[str, Any]) -> Dict[str, Any]:
+    by_seen = temporal_summary.get("by_seen_layout_count_before")
+    if not isinstance(by_seen, dict) or not by_seen:
+        return {}
+    rows: List[Dict[str, Any]] = []
+    for key, value in by_seen.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            seen = int(key)
+        except Exception:
+            continue
+        rows.append({"seen_layout_count_before": seen, **value})
+    rows.sort(key=lambda item: int(item["seen_layout_count_before"]))
+    if not rows:
+        return {}
+    first = rows[0]
+    last = rows[-1]
+    best_ghr5 = max(rows, key=lambda item: float(item.get("ghr5", 0.0) or 0.0))
+    best_min_dist = min(rows, key=lambda item: float(item.get("avg_min_dist", float("inf")) or float("inf")))
+    first_found = _rate_value(first, "found_rate")
+    last_found = _rate_value(last, "found_rate")
+    first_ghr5 = _rate_value(first, "ghr5")
+    last_ghr5 = _rate_value(last, "ghr5")
+    first_min = _rate_value(first, "avg_min_dist")
+    last_min = _rate_value(last, "avg_min_dist")
+    return {
+        "first_seen": first,
+        "last_seen": last,
+        "best_ghr5_seen": best_ghr5,
+        "best_avg_min_dist_seen": best_min_dist,
+        "delta_found_rate_last_minus_first": (
+            round(float(last_found) - float(first_found), 6)
+            if first_found is not None and last_found is not None
+            else None
+        ),
+        "delta_ghr5_last_minus_first": (
+            round(float(last_ghr5) - float(first_ghr5), 6)
+            if first_ghr5 is not None and last_ghr5 is not None
+            else None
+        ),
+        "delta_avg_min_dist_last_minus_first": (
+            round(float(last_min) - float(first_min), 6)
+            if first_min is not None and last_min is not None
+            else None
+        ),
+        "late_memory_improvement_signal": bool(
+            last_found is not None
+            and first_found is not None
+            and last_ghr5 is not None
+            and first_ghr5 is not None
+            and last_min is not None
+            and first_min is not None
+            and (last_found > first_found or last_ghr5 > first_ghr5)
+            and last_min < first_min
+        ),
+    }
+
+
+def _failure_flags(
+    summary: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+    candidates: Dict[str, Any],
+    observations: Dict[str, Any],
+    memory: Dict[str, Any],
+    feedback_count: int,
+    temporal_trend: Dict[str, Any],
+) -> List[str]:
+    flags: List[str] = []
+    if int(observations.get("detections", 0) or 0) <= 0:
+        flags.append("perception_empty")
+    if int(memory.get("memory_events", 0) or 0) <= 0:
+        flags.append("memory_not_updated")
+    if int(candidates.get("candidate_rounds", 0) or 0) > 0 and int(candidates.get("rounds_with_candidates", 0) or 0) <= 0:
+        flags.append("retrieval_no_candidates")
+    if int(diagnostics.get("ghr5", 0) or 0) <= 0:
+        flags.append("candidates_far_from_goal")
+    if int(diagnostics.get("ghr5_to_found_gap", 0) or 0) > 0:
+        flags.append("candidate_near_but_not_converted_to_success")
+    if int(diagnostics.get("perception_to_benchmark_found_gap", 0) or 0) >= max(5, int(diagnostics.get("found", 0) or 0) * 3):
+        flags.append("perception_goal_mismatch_or_false_positive_confirmation")
+    if float(summary.get("success_rate", 0.0) or 0.0) <= 0.0 and feedback_count > 0:
+        flags.append("negative_feedback_after_failed_candidates")
+    if temporal_trend.get("late_memory_improvement_signal"):
+        flags.append("late_memory_improvement_signal")
+    if float(summary.get("success_rate", 0.0) or 0.0) > 0.0 and not flags:
+        flags.append("healthy")
+    return flags
+
+
 def _failure_bucket(
     summary: Dict[str, Any],
     diagnostics: Dict[str, Any],
@@ -159,7 +274,9 @@ def _failure_bucket(
     observations: Dict[str, Any],
     memory: Dict[str, Any],
     feedback_count: int,
+    temporal_trend: Dict[str, Any],
 ) -> str:
+    flags = _failure_flags(summary, diagnostics, candidates, observations, memory, feedback_count, temporal_trend)
     if int(observations.get("detections", 0) or 0) <= 0:
         return "perception_empty"
     if int(memory.get("memory_events", 0) or 0) <= 0:
@@ -168,7 +285,9 @@ def _failure_bucket(
         return "retrieval_no_candidates"
     if int(diagnostics.get("ghr5", 0) or 0) <= 0:
         return "candidates_far_from_goal"
-    if int(diagnostics.get("ghr5", 0) or 0) > 0 and int(diagnostics.get("found", 0) or 0) <= 0:
+    if "perception_goal_mismatch_or_false_positive_confirmation" in flags:
+        return "perception_goal_mismatch_or_false_positive_confirmation"
+    if "candidate_near_but_not_converted_to_success" in flags:
         return "candidate_near_but_navigation_or_success_radius_failed"
     if float(summary.get("success_rate", 0.0) or 0.0) <= 0.0 and feedback_count > 0:
         return "negative_feedback_after_failed_candidates"
@@ -201,11 +320,22 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
     diagnostic_stats = _diagnostic_stats(diagnostics_records)
     candidate_stats = _candidate_stats(candidate_records)
     memory_stats = _memory_stats(memory_records)
+    temporal_trend = _temporal_trend(temporal_summary)
+    failure_flags = _failure_flags(
+        summary,
+        diagnostic_stats,
+        candidate_stats,
+        observation_stats,
+        memory_stats,
+        len(feedback_records),
+        temporal_trend,
+    )
 
     result = {
         "output_dir": str(output_dir),
         "benchmark_summary": summary,
         "temporal_summary": temporal_summary,
+        "temporal_trend": temporal_trend,
         "episodes": len(episode_results) or summary.get("evaluated_episodes"),
         "layout_transitions": len(transition_records),
         "observations": observation_stats,
@@ -216,6 +346,7 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
             "events": len(feedback_records),
             "by_label": _count_by(feedback_records, "label"),
         },
+        "failure_flags": failure_flags,
         "failure_bucket": _failure_bucket(
             summary,
             diagnostic_stats,
@@ -223,6 +354,7 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
             observation_stats,
             memory_stats,
             len(feedback_records),
+            temporal_trend,
         ),
     }
     return result

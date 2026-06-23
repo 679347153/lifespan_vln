@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from RAANav.AgenticRAG.semantic_map import Floor, Object
 
-from .common import euclidean_2d, normalize_label, token_overlap
-from .episode_to_queries import QuerySpec
+from .common import euclidean_2d
+from .episode_to_queries import QuerySpec, query_label_matches, query_label_similarity
 from .image_goal_index import ImageGoalIndex
 
 
@@ -119,9 +119,9 @@ def agent_prior(obj: Object, query: QuerySpec) -> float:
     score = 0.0
     if obj.obj_id == query.target_object_id:
         score += 0.8
-    if normalize_label(obj.label) == query.query_label:
+    if query_label_matches(obj.label, query):
         score += 0.65
-    overlap = token_overlap(obj.label, query.query_label)
+    overlap = query_label_similarity(obj.label, query)
     score += 0.2 * overlap
     stats = obj.cooccur_stats or {}
     if query.sampled_region_id is not None and str(stats.get("sampled_region_id")) == str(query.sampled_region_id):
@@ -146,9 +146,9 @@ def stability_bucket(value: float) -> str:
 def _label_similarity(obj: Object, query: QuerySpec) -> float:
     if obj.obj_id == query.target_object_id:
         return 1.0
-    if normalize_label(obj.label) == query.query_label:
+    if query_label_matches(obj.label, query):
         return 0.95
-    return token_overlap(obj.label, query.query_label)
+    return query_label_similarity(obj.label, query)
 
 
 def compute_candidate_score(
@@ -175,7 +175,7 @@ def compute_candidate_score(
     if obj.obj_id == query.target_object_id:
         r_sim = max(r_sim, 1.0)
         sim_reason = f"{sim.reason},same_obj_id"
-    elif normalize_label(obj.label) == query.query_label:
+    elif query_label_matches(obj.label, query):
         r_sim = max(r_sim, 0.95)
         sim_reason = f"{sim.reason},same_label"
     else:

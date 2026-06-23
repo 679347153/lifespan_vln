@@ -22,7 +22,7 @@ from benchmark.schemas import (
 
 from .common import as_path, euclidean_2d, write_json
 from .dataset_index import DatasetIndex
-from .episode_to_queries import query_from_subtask
+from .episode_to_queries import load_target_name_map, query_from_subtask
 from .formal_scoring import (
     FusionParams,
     apply_negative_feedback,
@@ -192,7 +192,12 @@ def run_episode_closed_loop(
 
     try:
         for subtask in episode.subtasks:
-            query = query_from_subtask(episode, subtask)
+            query = query_from_subtask(
+                episode,
+                subtask,
+                target_name_map=args.target_name_map_data,
+                normalize_target_names=bool(args.normalize_target_names),
+            )
             visited_points: List[List[float]] = []
             subtask_found = False
             final_dist = float("inf")
@@ -297,6 +302,7 @@ def run_episode_closed_loop(
                         "task_type": subtask.task_type,
                         "target_object": subtask.target_object,
                         "query_label": query.query_label,
+                        "alias_labels": query.alias_labels,
                         "query_modality": image_index.query_modality(query),
                         "target_object_id": str(subtask.target_object_id),
                         "target_position": [subtask.target_position.x, subtask.target_position.z],
@@ -403,6 +409,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     episodes_root, episode_paths = load_episodes_for_args(args, index)
     output_dir = as_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    args.target_name_map_data = load_target_name_map(args.target_name_map)
 
     run_path = output_dir / "run.jsonl"
     diag_path = output_dir / "memory_diagnostics.jsonl"
@@ -463,6 +470,13 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     write_json(output_dir / "memory_by_stability.json", memory_by_stability)
     write_json(output_dir / "memory_exploration_curve.json", memory_curve)
     write_json(output_dir / "adapter_warnings.json", {"warnings": warnings, "warning_count": len(warnings)})
+    write_json(
+        output_dir / "target_name_normalization.json",
+        {
+            "normalize_target_names": bool(args.normalize_target_names),
+            "target_name_map": args.target_name_map_data,
+        },
+    )
 
     bench_args = argparse.Namespace(
         episodes=str(episodes_root),
@@ -504,6 +518,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-candidates", type=int, default=10)
     parser.add_argument("--max-rounds", type=int, default=5)
     parser.add_argument("--images-dir", default="objects_images")
+    parser.add_argument(
+        "--target-name-map",
+        default=None,
+        help="Optional JSON object mapping raw target names to canonical labels or alias lists.",
+    )
+    parser.add_argument(
+        "--normalize-target-names",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable built-in target aliases such as chess_set->chess and camera_01->camera.",
+    )
     parser.add_argument("--data-dir", default="hm3d")
     parser.add_argument("--objects-dir", default="objects")
     parser.add_argument("--load-layout-objects", action="store_true")
