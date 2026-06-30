@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from .habitat_adapter import HabitatLayoutAdapter, euclidean_distance, path_length_from_poses
+from .habitat_adapter import HabitatLayoutAdapter, euclidean_distance, horizontal_distance, path_length_from_poses
 from .metrics import (
     EpisodeResult,
     SubtaskResult,
@@ -104,7 +104,7 @@ def evaluate_trajectory(
                 final_pose = trace.final_pose
                 path_length = float(trace.path_length)
                 steps = int(trace.steps)
-            distance_to_goal = euclidean_distance(final_pose, subtask.target_position)
+            distance_to_goal = horizontal_distance(final_pose, subtask.target_position)
             success = distance_to_goal <= float(subtask.success_radius)
             shortest = _segment_shortest_distance(current_shortest_pose, subtask, adapter)
             subtask_results.append(

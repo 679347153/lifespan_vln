@@ -30,6 +30,12 @@ def euclidean_distance(a: Pose | Sequence[float], b: Pose | Sequence[float]) -> 
     return float(np.linalg.norm(pa - pb))
 
 
+def horizontal_distance(a: Pose | Sequence[float], b: Pose | Sequence[float]) -> float:
+    pa = pose_to_array(a) if isinstance(a, Pose) else np.asarray(a[:3], dtype=np.float32)
+    pb = pose_to_array(b) if isinstance(b, Pose) else np.asarray(b[:3], dtype=np.float32)
+    return float(np.linalg.norm(pa[[0, 2]] - pb[[0, 2]]))
+
+
 def path_length_from_poses(poses: Sequence[Pose]) -> float:
     if len(poses) < 2:
         return 0.0

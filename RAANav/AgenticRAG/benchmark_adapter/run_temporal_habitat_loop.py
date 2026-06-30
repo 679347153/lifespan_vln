@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from benchmark.evaluate import evaluate as benchmark_evaluate
-from benchmark.habitat_adapter import euclidean_distance
+from benchmark.habitat_adapter import horizontal_distance
 from benchmark.schemas import (
     Episode,
     Pose,
@@ -288,7 +288,7 @@ def _rank_with_remote_clip(
 
 
 def _trace_distance(final_pose: Pose, subtask: Subtask) -> float:
-    return euclidean_distance(final_pose, subtask.target_position)
+    return horizontal_distance(final_pose, subtask.target_position)
 
 
 def run_episode_temporal(
