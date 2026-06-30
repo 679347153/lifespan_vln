@@ -165,10 +165,66 @@ def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 def _memory_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_event = _count_by(records, "event")
     by_label = _count_by(records, "label")
+    migrated_room_events = 0
+    negative_room_feedback_events = 0
+    room_event_counter: Counter[str] = Counter()
+    for record in records:
+        details = record.get("details")
+        if not isinstance(details, dict):
+            continue
+        room_id = details.get("room_id") or details.get("current_room_id")
+        if room_id:
+            room_event_counter[str(room_id)] += 1
+        if record.get("event") == "migrated" and details.get("previous_room_id") != details.get("current_room_id"):
+            migrated_room_events += 1
+        if record.get("event") == "negative_feedback" and details.get("room_id"):
+            negative_room_feedback_events += 1
     return {
         "memory_events": len(records),
         "by_event": by_event,
         "top_labels": dict(list(by_label.items())[:20]),
+        "migrated_room_events": migrated_room_events,
+        "negative_room_feedback_events": negative_room_feedback_events,
+        "top_rooms_by_event_count": dict(room_event_counter.most_common(20)),
+    }
+
+
+def _scene_memory_stats(output_dir: Path) -> Dict[str, Any]:
+    scene_root = output_dir / "scene_memory"
+    room_count = 0
+    objects_with_room_belief = 0
+    top_rooms: Counter[str] = Counter()
+    scene_count = 0
+    if not scene_root.exists():
+        return {
+            "scene_memory_files": 0,
+            "room_count": 0,
+            "objects_with_room_belief": 0,
+            "top_rooms_by_track_count": {},
+        }
+    for path in scene_root.rglob("scene_memory_final.json"):
+        payload = _read_json_optional(path) or {}
+        scene_count += 1
+        rooms = payload.get("rooms")
+        if isinstance(rooms, dict):
+            room_count += len(rooms)
+            for room_id, room in rooms.items():
+                if not isinstance(room, dict):
+                    continue
+                refs = room.get("object_refs")
+                if isinstance(refs, dict):
+                    top_rooms[str(room_id)] += len(refs)
+        for track in payload.get("tracks", []) or []:
+            if not isinstance(track, dict):
+                continue
+            stats = track.get("cooccur_stats")
+            if isinstance(stats, dict) and stats.get("room_belief"):
+                objects_with_room_belief += 1
+    return {
+        "scene_memory_files": scene_count,
+        "room_count": room_count,
+        "objects_with_room_belief": objects_with_room_belief,
+        "top_rooms_by_track_count": dict(top_rooms.most_common(20)),
     }
 
 
@@ -320,6 +376,7 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
     diagnostic_stats = _diagnostic_stats(diagnostics_records)
     candidate_stats = _candidate_stats(candidate_records)
     memory_stats = _memory_stats(memory_records)
+    memory_stats.update(_scene_memory_stats(output_dir))
     temporal_trend = _temporal_trend(temporal_summary)
     failure_flags = _failure_flags(
         summary,

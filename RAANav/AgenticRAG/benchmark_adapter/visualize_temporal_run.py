@@ -156,6 +156,37 @@ def _group_by(records: Iterable[Dict[str, Any]], key: str) -> Dict[str, List[Dic
     return dict(out)
 
 
+def _scene_memory_payload(output_dir: Path) -> Dict[str, Any]:
+    scene_root = output_dir / "scene_memory"
+    scenes: List[Dict[str, Any]] = []
+    room_counts: Counter[str] = Counter()
+    if not scene_root.exists():
+        return {"scenes": [], "room_counts": []}
+    for path in sorted(scene_root.rglob("scene_memory_final.json")):
+        payload = _read_json_optional(path) or {}
+        rooms = payload.get("rooms") if isinstance(payload.get("rooms"), dict) else {}
+        tracks = payload.get("tracks") if isinstance(payload.get("tracks"), list) else []
+        for room_id, room in rooms.items():
+            if not isinstance(room, dict):
+                continue
+            refs = room.get("object_refs")
+            if isinstance(refs, dict):
+                room_counts[str(room_id)] += len(refs)
+        scenes.append(
+            {
+                "scene_name": payload.get("scene_name") or path.parent.name,
+                "track_count": payload.get("track_count", len(tracks)),
+                "room_assignment": payload.get("room_assignment") or {},
+                "rooms": rooms,
+                "tracks": tracks,
+            }
+        )
+    return {
+        "scenes": scenes,
+        "room_counts": [{"key": key, "count": count} for key, count in room_counts.most_common(30)],
+    }
+
+
 def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> Dict[str, Any]:
     output_dir = as_path(output_dir)
     run_rows = _read_jsonl(output_dir / "run.jsonl")
@@ -170,6 +201,7 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
     perception_summary = _read_json_optional(output_dir / "perception_summary.json") or {}
     by_task_type = _read_json_optional(output_dir / "by_task_type.json") or {}
     diagnosis = diagnose(output_dir)
+    scene_memory = _scene_memory_payload(output_dir)
 
     episode_rows = []
     for row in run_rows:
@@ -207,6 +239,7 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
         "memory_updates": memory_updates,
         "negative_feedback": negative_feedback,
         "layout_transitions": layout_transitions,
+        "scene_memory": scene_memory,
         "counts": {
             "observation_labels": _count_by(observations, "label", limit=30),
             "memory_events": _count_by(memory_updates, "event", limit=20),
@@ -214,6 +247,7 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
             "candidate_backends": _candidate_backend_counts(candidates),
             "targets": _count_by(diagnostics, "target_object", limit=30),
             "task_types": _count_by(diagnostics, "task_type", limit=10),
+            "rooms": scene_memory.get("room_counts", []),
         },
         "groups": {
             "diagnostics_by_episode": _group_by(diagnostics, "episode_id"),
@@ -317,6 +351,11 @@ def _html_template(payload_json: str, title: str) -> str:
     .bar-row {{ display: grid; grid-template-columns: minmax(80px, 170px) 1fr 44px; gap: 8px; align-items: center; margin: 5px 0; font-size: 12px; }}
     .bar-bg {{ height: 9px; background: #edf2f7; border-radius: 999px; overflow: hidden; }}
     .bar {{ height: 100%; background: var(--blue); }}
+    .room-grid {{ display: grid; grid-template-columns: minmax(260px, 0.9fr) minmax(360px, 1.1fr); gap: 14px; }}
+    .room-node {{ border: 1px solid #e8edf2; border-radius: 6px; margin: 8px 0; padding: 9px; background: #fbfdff; }}
+    .room-node h3 {{ margin: 0 0 7px; }}
+    .obj-ref {{ display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-top: 1px dashed #e2e8f0; font-size: 12px; }}
+    .belief {{ color: var(--green); font-variant-numeric: tabular-nums; }}
     @media (max-width: 960px) {{ .two {{ grid-template-columns: 1fr; }} main {{ padding: 12px; }} }}
   </style>
 </head>
@@ -362,6 +401,17 @@ def _html_template(payload_json: str, title: str) -> str:
       <section><h2>候选后端</h2><div id="candidateBackends"></div></section>
       <section><h2>Memory 事件</h2><div id="memoryEvents"></div></section>
     </div>
+    <section>
+      <h2>Room Memory 树</h2>
+      <div class="subtle" id="roomMode"></div>
+      <div class="room-grid">
+        <div id="roomTree"></div>
+        <div>
+          <h3>Object Room Belief</h3>
+          <div class="table-scroll"><table id="roomObjectTable"></table></div>
+        </div>
+      </div>
+    </section>
     <section>
       <h2>Subtask 列表</h2>
       <div class="table-scroll"><table id="subtaskTable"></table></div>
@@ -434,6 +484,56 @@ def _html_template(payload_json: str, title: str) -> str:
     function barChart(id, rows, color='var(--blue)') {{
       const max = Math.max(1, ...rows.map(r => r.count || 0));
       $(id).innerHTML = rows.map(r => `<div class="bar-row"><div title="${{esc(r.key)}}">${{esc(r.key)}}</div><div class="bar-bg"><div class="bar" style="width:${{100*(r.count||0)/max}}%;background:${{color}}"></div></div><div>${{r.count}}</div></div>`).join('') || '<div class="subtle">No data.</div>';
+    }}
+    function renderRoomMemory() {{
+      const scenes = data.scene_memory?.scenes || [];
+      if (!scenes.length) {{
+        $('roomMode').textContent = 'No scene_memory_final.json found.';
+        $('roomTree').innerHTML = '<div class="subtle">No room memory available.</div>';
+        $('roomObjectTable').innerHTML = '';
+        return;
+      }}
+      const scene = scenes[0];
+      const mode = scene.room_assignment?.mode || 'unknown';
+      const grid = scene.room_assignment?.grid_size_m;
+      $('roomMode').textContent = `scene=${{scene.scene_name}} tracks=${{scene.track_count}} room_assignment=${{mode}}${{grid ? ' grid=' + grid + 'm' : ''}}`;
+      const rooms = scene.rooms || {{}};
+      const tracks = scene.tracks || [];
+      const trackById = Object.fromEntries(tracks.map(t => [t.obj_id, t]));
+      const roomRows = Object.entries(rooms).sort((a,b) => {{
+        const ac = Object.keys(a[1]?.object_refs || {{}}).length;
+        const bc = Object.keys(b[1]?.object_refs || {{}}).length;
+        return bc - ac || a[0].localeCompare(b[0]);
+      }});
+      $('roomTree').innerHTML = roomRows.slice(0, 40).map(([roomId, room]) => {{
+        const refs = room.object_refs || {{}};
+        const refRows = Object.entries(refs).sort((a,b) => Number(b[1]?.room_exist_prob || 0) - Number(a[1]?.room_exist_prob || 0)).slice(0, 12);
+        return `<div class="room-node">
+          <h3>${{esc(roomId)}} <span class="badge">${{Object.keys(refs).length}} objects</span></h3>
+          ${{refRows.map(([objId, ref]) => {{
+            const tr = trackById[objId] || {{}};
+            return `<div class="obj-ref"><span>${{esc(tr.label || objId)}}<br><span class="subtle">${{esc(objId)}}</span></span><span class="belief">P=${{fmt(ref.room_exist_prob,2)}} seen=${{ref.seen_count || 0}} neg=${{ref.negative_count || 0}}</span></div>`;
+          }}).join('') || '<div class="subtle">No object refs.</div>'}}
+        </div>`;
+      }}).join('') || '<div class="subtle">No rooms.</div>';
+      const objectRows = tracks.map(t => {{
+        const stats = t.cooccur_stats || {{}};
+        const belief = stats.room_belief || {{}};
+        const topBelief = Object.entries(belief).sort((a,b) => Number(b[1]) - Number(a[1])).slice(0, 4)
+          .map(([rid, p]) => `${{rid}}:${{fmt(p,2)}}`).join(' | ');
+        return {{
+          obj_id: t.obj_id,
+          label: t.label,
+          current_room_id: stats.current_room_id || t.room_id || '',
+          top_belief: topBelief,
+          history_count: Array.isArray(stats.room_history) ? stats.room_history.length : 0,
+        }};
+      }}).filter(r => r.current_room_id || r.top_belief);
+      $('roomObjectTable').innerHTML = `<thead><tr><th>label</th><th>current_room</th><th>room_belief top</th><th>history</th></tr></thead><tbody>` +
+        objectRows.sort((a,b) => String(a.current_room_id).localeCompare(String(b.current_room_id)) || String(a.label).localeCompare(String(b.label)))
+          .slice(0, 300)
+          .map(r => `<tr><td>${{esc(r.label)}}<br><span class="subtle">${{esc(r.obj_id)}}</span></td><td>${{esc(r.current_room_id)}}</td><td>${{esc(r.top_belief)}}</td><td>${{r.history_count}}</td></tr>`).join('') +
+        '</tbody>';
     }}
     function fillSelectors() {{
       const epSel = $('episodeSelect');
@@ -527,6 +627,7 @@ def _html_template(payload_json: str, title: str) -> str:
       barChart('obsLabels', data.counts.observation_labels || [], 'var(--purple)');
       barChart('candidateBackends', data.counts.candidate_backends || [], 'var(--blue)');
       barChart('memoryEvents', data.counts.memory_events || [], 'var(--green)');
+      renderRoomMemory();
       fillSelectors();
       renderSelected();
       $('diagnosis').textContent = JSON.stringify(data.diagnosis || {{}}, null, 2);
