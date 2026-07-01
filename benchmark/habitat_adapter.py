@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import random
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -40,6 +41,165 @@ def path_length_from_poses(poses: Sequence[Pose]) -> float:
     if len(poses) < 2:
         return 0.0
     return sum(euclidean_distance(poses[i - 1], poses[i]) for i in range(1, len(poses)))
+
+
+def _round_point(point: Sequence[float], ndigits: int = 4) -> List[float]:
+    return [round(float(v), ndigits) for v in point]
+
+
+def _find_scene_info_path(data_dir: Path, scene_name: str) -> Optional[Path]:
+    candidates = [
+        data_dir / "scene_info_export" / f"{scene_name}_scene_info.json",
+        data_dir / "minival" / "scene_info_export" / f"{scene_name}_scene_info.json",
+        data_dir / "val" / "scene_info_export" / f"{scene_name}_scene_info.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    if data_dir.exists():
+        matches = sorted(data_dir.rglob(f"{scene_name}_scene_info.json"))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _semantic_regions_from_scene_info(data_dir: Path, scene_name: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    path = _find_scene_info_path(data_dir, scene_name)
+    if path is None:
+        return [], None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], str(path)
+    regions: List[Dict[str, Any]] = []
+    for room in payload.get("rooms", []) if isinstance(payload, dict) else []:
+        if not isinstance(room, dict):
+            continue
+        bbox = room.get("bounding_box")
+        mn = bbox.get("min") if isinstance(bbox, dict) else None
+        mx = bbox.get("max") if isinstance(bbox, dict) else None
+        center = room.get("room_center")
+        if not (isinstance(mn, list) and len(mn) >= 3 and isinstance(mx, list) and len(mx) >= 3):
+            continue
+        region_id = room.get("region_id")
+        rid = f"region_{region_id}"
+        x0, z0 = float(mn[0]), float(mn[2])
+        x1, z1 = float(mx[0]), float(mx[2])
+        polygon = [
+            [round(x0, 4), round(z0, 4)],
+            [round(x1, 4), round(z0, 4)],
+            [round(x1, 4), round(z1, 4)],
+            [round(x0, 4), round(z1, 4)],
+        ]
+        top_categories = []
+        cats = room.get("categories")
+        if isinstance(cats, dict):
+            top_categories = [
+                {"label": str(k), "count": int(v)}
+                for k, v in sorted(cats.items(), key=lambda item: int(item[1]), reverse=True)[:8]
+            ]
+        regions.append(
+            {
+                "region_id": region_id,
+                "room_id": rid,
+                "label": rid,
+                "source": "semantic_region_bbox",
+                "bbox": {"min": _round_point(mn[:3]), "max": _round_point(mx[:3])},
+                "center": _round_point(center[:3]) if isinstance(center, list) and len(center) >= 3 else None,
+                "polygon": polygon,
+                "object_count": int(room.get("object_count", 0) or 0),
+                "top_categories": top_categories,
+            }
+        )
+    return regions, str(path)
+
+
+def _layout_objects_for_geometry(layout_path: Optional[Path]) -> List[Dict[str, Any]]:
+    if layout_path is None or not Path(layout_path).exists():
+        return []
+    try:
+        payload = json.loads(Path(layout_path).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for obj in payload.get("objects", []) if isinstance(payload, dict) else []:
+        if not isinstance(obj, dict):
+            continue
+        pos = obj.get("position")
+        if not (isinstance(pos, list) and len(pos) >= 3):
+            continue
+        out.append(
+            {
+                "id": obj.get("id"),
+                "name": obj.get("name") or obj.get("model_id") or obj.get("id"),
+                "model_id": obj.get("model_id"),
+                "position": _round_point(pos[:3]),
+                "sampled_region_id": obj.get("sampled_region_id"),
+                "target_instance_id": obj.get("target_instance_id"),
+            }
+        )
+    return out
+
+
+def _bounds_from_points(points: Sequence[Sequence[float]], padding: float = 1.0) -> Optional[Dict[str, float]]:
+    if not points:
+        return None
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    zs = [float(p[2]) for p in points]
+    return {
+        "min_x": round(min(xs) - padding, 4),
+        "max_x": round(max(xs) + padding, 4),
+        "min_y": round(min(ys), 4),
+        "max_y": round(max(ys), 4),
+        "min_z": round(min(zs) - padding, 4),
+        "max_z": round(max(zs) + padding, 4),
+    }
+
+
+def _merge_bounds(primary: Optional[Dict[str, float]], points: Sequence[Sequence[float]], padding: float = 1.0) -> Dict[str, float]:
+    extra = _bounds_from_points(points, padding=padding)
+    if primary is None:
+        return extra or {"min_x": -5.0, "max_x": 5.0, "min_y": 0.0, "max_y": 0.0, "min_z": -5.0, "max_z": 5.0}
+    if extra is None:
+        return primary
+    return {
+        "min_x": min(primary["min_x"], extra["min_x"]),
+        "max_x": max(primary["max_x"], extra["max_x"]),
+        "min_y": min(primary["min_y"], extra["min_y"]),
+        "max_y": max(primary["max_y"], extra["max_y"]),
+        "min_z": min(primary["min_z"], extra["min_z"]),
+        "max_z": max(primary["max_z"], extra["max_z"]),
+    }
+
+
+def _contour_segments_from_grid(grid: np.ndarray, bounds: Dict[str, float], resolution: float, max_segments: int = 12000) -> List[List[List[float]]]:
+    if grid.size == 0:
+        return []
+    h, w = grid.shape
+    segments: List[List[List[float]]] = []
+
+    def x_at(col: int) -> float:
+        return float(bounds["min_x"]) + col * resolution
+
+    def z_at(row: int) -> float:
+        return float(bounds["min_z"]) + row * resolution
+
+    for r in range(h):
+        for c in range(w):
+            if not bool(grid[r, c]):
+                continue
+            if r == 0 or not bool(grid[r - 1, c]):
+                segments.append([_round_point([x_at(c), z_at(r)], 3), _round_point([x_at(c + 1), z_at(r)], 3)])
+            if r == h - 1 or not bool(grid[r + 1, c]):
+                segments.append([_round_point([x_at(c), z_at(r + 1)], 3), _round_point([x_at(c + 1), z_at(r + 1)], 3)])
+            if c == 0 or not bool(grid[r, c - 1]):
+                segments.append([_round_point([x_at(c), z_at(r)], 3), _round_point([x_at(c), z_at(r + 1)], 3)])
+            if c == w - 1 or not bool(grid[r, c + 1]):
+                segments.append([_round_point([x_at(c + 1), z_at(r)], 3), _round_point([x_at(c + 1), z_at(r + 1)], 3)])
+            if len(segments) >= max_segments:
+                return segments
+    return segments
 
 
 def _yaw_to_quat(yaw_deg: float) -> Any:
@@ -310,6 +470,102 @@ class HabitatLayoutAdapter:
             total += dist
             current = subtask.target_position
         return float(total)
+
+    def export_scene_geometry(
+        self,
+        *,
+        grid_resolution: float = 0.25,
+        max_random_points: int = 6000,
+        max_navmesh_points: int = 2000,
+    ) -> Dict[str, Any]:
+        """Export lightweight scene geometry for offline debug visualization."""
+        semantic_regions, scene_info_path = _semantic_regions_from_scene_info(self.data_dir, self.scene_name)
+        layout_objects = _layout_objects_for_geometry(self.layout_path)
+        semantic_points: List[List[float]] = []
+        for region in semantic_regions:
+            bbox = region.get("bbox") if isinstance(region, dict) else None
+            if isinstance(bbox, dict):
+                mn = bbox.get("min")
+                mx = bbox.get("max")
+                if isinstance(mn, list) and len(mn) >= 3:
+                    semantic_points.append([float(mn[0]), float(mn[1]), float(mn[2])])
+                if isinstance(mx, list) and len(mx) >= 3:
+                    semantic_points.append([float(mx[0]), float(mx[1]), float(mx[2])])
+
+        navigable_points: List[List[float]] = []
+        navmesh_contours: List[List[List[float]]] = []
+        bounds: Optional[Dict[str, float]] = None
+        navmesh_available = self.sim is not None
+        if self.sim is not None:
+            pf = self.pathfinder
+            random_points: List[List[float]] = []
+            for _ in range(max(0, int(max_random_points))):
+                try:
+                    point = pf.get_random_navigable_point()
+                except Exception:
+                    break
+                if point is None or np.any(np.isnan(point)):
+                    continue
+                random_points.append([float(point[0]), float(point[1]), float(point[2])])
+            bounds = _bounds_from_points(random_points, padding=1.0)
+            if len(random_points) > max_navmesh_points:
+                stride = max(1, len(random_points) // max_navmesh_points)
+                navigable_points = [_round_point(p, 4) for p in random_points[::stride][:max_navmesh_points]]
+            else:
+                navigable_points = [_round_point(p, 4) for p in random_points]
+            bounds = _merge_bounds(bounds, semantic_points + [obj["position"] for obj in layout_objects], padding=1.0)
+            res = max(0.05, float(grid_resolution))
+            width = max(1, int(math.ceil((bounds["max_x"] - bounds["min_x"]) / res)))
+            height = max(1, int(math.ceil((bounds["max_z"] - bounds["min_z"]) / res)))
+            if width * height <= 350000:
+                grid = np.zeros((height, width), dtype=bool)
+                y = float(np.median([p[1] for p in random_points])) if random_points else float(bounds.get("min_y", 0.0))
+                for r in range(height):
+                    z = bounds["min_z"] + (r + 0.5) * res
+                    for c in range(width):
+                        x = bounds["min_x"] + (c + 0.5) * res
+                        try:
+                            grid[r, c] = bool(pf.is_navigable(np.asarray([x, y, z], dtype=np.float32)))
+                        except Exception:
+                            grid[r, c] = False
+                navmesh_contours = _contour_segments_from_grid(grid, bounds, res)
+        else:
+            bounds = _merge_bounds(None, semantic_points + [obj["position"] for obj in layout_objects], padding=1.0)
+
+        room_overlays = [
+            {
+                "room_id": region.get("room_id"),
+                "label": region.get("label"),
+                "source": region.get("source"),
+                "polygon": region.get("polygon"),
+                "center": region.get("center"),
+                "object_count": region.get("object_count"),
+            }
+            for region in semantic_regions
+        ]
+        return {
+            "schema_version": 1,
+            "scene_name": self.scene_name,
+            "source": {
+                "mode": "semantic_region_first_navmesh_fallback",
+                "scene_info_path": scene_info_path,
+                "stage_glb": str(self.scene_paths.stage_glb) if self.scene_paths else None,
+                "navmesh": str(self.scene_paths.navmesh) if self.scene_paths and self.scene_paths.navmesh else None,
+                "layout_path": str(self.layout_path) if self.layout_path else None,
+                "navmesh_available": bool(navmesh_available),
+            },
+            "bounds": bounds,
+            "grid_resolution": float(grid_resolution),
+            "navmesh_contours": navmesh_contours,
+            "navigable_points": navigable_points,
+            "semantic_regions": semantic_regions,
+            "layout_objects": layout_objects,
+            "room_overlays": room_overlays,
+            "notes": [
+                "semantic_regions are approximate AABB overlays when source=semantic_region_bbox",
+                "navmesh_contours represent sampled navigable footprint boundaries",
+            ],
+        }
 
 
 def shortest_path_sum_euclidean(start_pose: Pose, subtasks: Iterable[Subtask]) -> float:

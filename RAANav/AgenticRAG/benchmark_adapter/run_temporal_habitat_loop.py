@@ -581,6 +581,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     memories: Dict[str, SceneMemory] = {}
     all_diagnostics: List[Dict[str, Any]] = []
     warnings: List[str] = []
+    exported_geometry_scenes: set[str] = set()
     current_layout_key: Optional[Tuple[str, str]] = None
     current_layout_episode: Optional[Episode] = None
     loop: Optional[HabitatVisionLoop] = None
@@ -636,6 +637,17 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                         episode.start_pose,
                         sample_start_seed=episode.seed if bool(args.sample_start_pose) else None,
                     )
+                    if bool(args.export_scene_geometry) and episode.scene_name not in exported_geometry_scenes:
+                        try:
+                            if loop.adapter is not None:
+                                geometry = loop.adapter.export_scene_geometry(
+                                    grid_resolution=float(args.geometry_grid_resolution),
+                                    max_random_points=int(args.geometry_max_random_points),
+                                )
+                                write_json(output_dir / "scene_geometry" / f"{episode.scene_name}.json", geometry)
+                                exported_geometry_scenes.add(episode.scene_name)
+                        except Exception as exc:
+                            warnings.append(f"scene_geometry_export_failed:{episode.scene_name}:{exc}")
                     current_layout_key = layout_key
                     current_layout_episode = episode
                     trans_f.write(
@@ -780,6 +792,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-depth", type=float, default=5.0)
     parser.add_argument("--step-size", type=float, default=0.5)
     parser.add_argument("--clip-min-score", type=float, default=0.2)
+    parser.add_argument(
+        "--export-scene-geometry",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Export scene_geometry/<scene>.json for 2D/3D visual debugging.",
+    )
+    parser.add_argument(
+        "--geometry-grid-resolution",
+        type=float,
+        default=0.25,
+        help="Meters per cell when sampling navmesh footprint for visualization.",
+    )
+    parser.add_argument(
+        "--geometry-max-random-points",
+        type=int,
+        default=6000,
+        help="Maximum random navigable points used to estimate visualization bounds.",
+    )
     parser.add_argument(
         "--target-name-map",
         default=None,
