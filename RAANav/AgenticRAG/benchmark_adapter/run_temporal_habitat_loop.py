@@ -398,6 +398,7 @@ def run_episode_temporal(
                         "top_candidates": last_candidates,
                         "planned_pose": to_json_dict(target_pose),
                         "final_pose": to_json_dict(final_pose),
+                        "path": step_result.path,
                         "path_length": step_result.path_length,
                         "micro_steps": step_result.steps,
                     }
