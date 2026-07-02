@@ -48,6 +48,38 @@ def write_json(path: Union[str, Path], data: Any) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def _collapse_repeated_tokens(tokens: List[str]) -> List[str]:
+    collapsed: List[str] = []
+    for tok in tokens:
+        if not collapsed or collapsed[-1] != tok:
+            collapsed.append(tok)
+    return collapsed
+
+
+def _collapse_repeated_phrase_blocks(tokens: List[str]) -> List[str]:
+    if len(tokens) < 2:
+        return tokens
+    out: List[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        collapsed = False
+        max_block = (n - i) // 2
+        for block_len in range(max_block, 0, -1):
+            block = tokens[i : i + block_len]
+            if block and tokens[i + block_len : i + 2 * block_len] == block:
+                out.extend(block)
+                i += 2 * block_len
+                collapsed = True
+                while i + block_len <= n and tokens[i : i + block_len] == block:
+                    i += block_len
+                break
+        if not collapsed:
+            out.append(tokens[i])
+            i += 1
+    return out
+
+
 def normalize_label(value: Any) -> str:
     text = str(value or "").strip()
     text = text.replace("\\", "/").split("/")[-1]
@@ -57,10 +89,7 @@ def normalize_label(value: Any) -> str:
     text = re.sub(r"_?4k$", "", text)
     text = re.sub(r"_?object_config$", "", text)
     tokens = [tok for tok in text.split("_") if tok]
-    collapsed = []
-    for tok in tokens:
-        if not collapsed or collapsed[-1] != tok:
-            collapsed.append(tok)
+    collapsed = _collapse_repeated_phrase_blocks(_collapse_repeated_tokens(tokens))
     text = "_".join(collapsed)
     return text
 
@@ -92,6 +121,66 @@ MATERIAL_ONLY_LABELS = {
     "wooden",
 }
 
+DESCRIPTIVE_LABEL_TOKENS = {
+    "ancient",
+    "antique",
+    "big",
+    "classic",
+    "decorative",
+    "large",
+    "little",
+    "modern",
+    "new",
+    "old",
+    "ornamental",
+    "round",
+    "small",
+    "square",
+    "tall",
+    "vintage",
+}
+
+CANONICAL_PHRASE_LABELS = {
+    "alarm_clock": "clock",
+    "antique_ceramic_vase": "vase",
+    "brass_pot": "pot",
+    "ceramic_vase": "vase",
+    "chess_set": "chess",
+    "coffee_table": "table",
+    "desk_table": "table",
+    "dining_table": "table",
+    "floor_lamp": "lamp",
+    "shelf_cabinet": "cabinet",
+    "table_lamp": "lamp",
+    "tea_set": "tea_set",
+}
+
+CANONICAL_OBJECT_TOKENS = {
+    "apple",
+    "bed",
+    "book",
+    "bottle",
+    "bowl",
+    "cabinet",
+    "cake",
+    "camera",
+    "chair",
+    "chess",
+    "clock",
+    "cup",
+    "desk",
+    "lamp",
+    "megaphone",
+    "mirror",
+    "picture",
+    "plant",
+    "pot",
+    "shelf",
+    "sofa",
+    "table",
+    "vase",
+}
+
 GENERIC_NON_OBJECT_LABELS = {
     "area",
     "background",
@@ -112,7 +201,20 @@ GENERIC_NON_OBJECT_LABELS = {
 def sanitize_detection_label(value: Any) -> str:
     """Normalize open-vocabulary detector phrases into stable object labels."""
 
-    return normalize_label(value)
+    label = normalize_label(value)
+    if not label:
+        return ""
+    tokens = [tok for tok in label.split("_") if tok]
+    while tokens and tokens[-1] in DESCRIPTIVE_LABEL_TOKENS:
+        tokens.pop()
+    tokens = _collapse_repeated_phrase_blocks(_collapse_repeated_tokens(tokens))
+    label = "_".join(tokens)
+    if label in CANONICAL_PHRASE_LABELS:
+        return CANONICAL_PHRASE_LABELS[label]
+    object_tokens = [tok for tok in tokens if tok in CANONICAL_OBJECT_TOKENS]
+    if len(tokens) > 1 and object_tokens:
+        return object_tokens[-1]
+    return label
 
 
 def is_noise_detection_label(value: Any) -> bool:
@@ -120,7 +222,7 @@ def is_noise_detection_label(value: Any) -> bool:
     if not label:
         return True
     tokens = [tok for tok in label.split("_") if tok]
-    if len(tokens) == 1 and tokens[0] in MATERIAL_ONLY_LABELS:
+    if tokens and all(tok in MATERIAL_ONLY_LABELS or tok in DESCRIPTIVE_LABEL_TOKENS for tok in tokens):
         return True
     if label in GENERIC_NON_OBJECT_LABELS:
         return True
