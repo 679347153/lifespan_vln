@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from RAANav.AgenticRAG.semantic_map import Floor, Object, Room
 
-from .common import euclidean_2d, normalize_label
+from .common import euclidean_2d, is_noise_detection_label, normalize_label, sanitize_detection_label
 
 
 def utc_now_iso() -> str:
@@ -309,9 +309,15 @@ class SceneMemory:
     ) -> List[MemoryEvent]:
         events: List[MemoryEvent] = []
         for det in detections:
-            label = normalize_label(det.get("label"))
-            if not label:
+            label = sanitize_detection_label(det.get("label"))
+            if is_noise_detection_label(label):
                 continue
+            if det.get("label") != label:
+                det = dict(det)
+                raw_label = str(det.get("raw_label") or det.get("label") or "").strip()
+                if raw_label:
+                    det["raw_label"] = raw_label
+                det["label"] = label
             pos2d = _pos2d_from_detection(det)
             if pos2d is None:
                 continue

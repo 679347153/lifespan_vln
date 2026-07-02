@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .common import as_path, write_json
+from .common import as_path, is_noise_detection_label, sanitize_detection_label, write_json
 from .diagnose_temporal_run import diagnose
 
 
@@ -91,6 +91,10 @@ def _count_by(records: Iterable[Dict[str, Any]], key: str, *, limit: int = 50) -
     counts: Counter[str] = Counter()
     for record in records:
         value = record.get(key)
+        if key == "label":
+            value = sanitize_detection_label(value)
+            if is_noise_detection_label(value):
+                continue
         if value is not None:
             counts[str(value)] += 1
     return [{"key": key_, "count": count} for key_, count in counts.most_common(limit)]
@@ -154,6 +158,21 @@ def _group_by(records: Iterable[Dict[str, Any]], key: str) -> Dict[str, List[Dic
     for record in records:
         out[str(record.get(key, ""))].append(record)
     return dict(out)
+
+
+def _clean_observation_records(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for record in records:
+        label = sanitize_detection_label(record.get("label"))
+        if is_noise_detection_label(label):
+            continue
+        clean = dict(record)
+        raw_label = str(record.get("raw_label") or record.get("label") or "").strip()
+        if raw_label and raw_label != label:
+            clean["raw_label"] = raw_label
+        clean["label"] = label
+        out.append(clean)
+    return out
 
 
 def _scene_memory_payload(output_dir: Path) -> Dict[str, Any]:
@@ -256,7 +275,9 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
     run_rows = _read_jsonl(output_dir / "run.jsonl")
     diagnostics = _read_jsonl(output_dir / "memory_diagnostics.jsonl")
     candidates = _read_jsonl(output_dir / "candidate_traces.jsonl")
-    observations = _read_jsonl(output_dir / "observation_traces.jsonl", max_records=max_observations)
+    observations = _clean_observation_records(
+        _read_jsonl(output_dir / "observation_traces.jsonl", max_records=max_observations)
+    )
     memory_updates = _read_jsonl(output_dir / "memory_updates.jsonl")
     negative_feedback = _read_jsonl(output_dir / "negative_feedback.jsonl")
     layout_transitions = _read_jsonl(output_dir / "layout_transitions.jsonl")

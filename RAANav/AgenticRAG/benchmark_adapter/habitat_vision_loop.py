@@ -13,6 +13,8 @@ from benchmark.habitat_adapter import HabitatLayoutAdapter, euclidean_distance
 from benchmark.schemas import Pose
 from remote_vision_server.client import RemoteOpenVocabDetector
 
+from .common import is_noise_detection_label, sanitize_detection_label
+
 
 @dataclass
 class CameraIntrinsics:
@@ -210,6 +212,13 @@ class HabitatVisionLoop:
                 raise
             agent_pos = np.asarray([view_pose.x, view_pose.y, view_pose.z], dtype=np.float32)
             for det in view_dets:
+                raw_label = str(det.get("label") or "").strip()
+                clean_label = sanitize_detection_label(raw_label)
+                if is_noise_detection_label(clean_label):
+                    continue
+                if raw_label and raw_label != clean_label:
+                    det["raw_label"] = raw_label
+                det["label"] = clean_label
                 self._attach_depth_position(det, depth_np, agent_pos, yaw)
                 det["_view_index"] = view_idx
                 det["_state_index"] = int(state_index)

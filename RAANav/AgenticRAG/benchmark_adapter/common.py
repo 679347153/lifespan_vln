@@ -56,7 +56,75 @@ def normalize_label(value: Any) -> str:
     text = re.sub(r"_+", "_", text).strip("_")
     text = re.sub(r"_?4k$", "", text)
     text = re.sub(r"_?object_config$", "", text)
+    tokens = [tok for tok in text.split("_") if tok]
+    collapsed = []
+    for tok in tokens:
+        if not collapsed or collapsed[-1] != tok:
+            collapsed.append(tok)
+    text = "_".join(collapsed)
     return text
+
+
+MATERIAL_ONLY_LABELS = {
+    "acrylic",
+    "aluminum",
+    "brass",
+    "bronze",
+    "cardboard",
+    "ceramic",
+    "chrome",
+    "concrete",
+    "cotton",
+    "fabric",
+    "glass",
+    "iron",
+    "leather",
+    "metal",
+    "paper",
+    "plastic",
+    "polyester",
+    "rubber",
+    "silver",
+    "steel",
+    "stone",
+    "velvet",
+    "wood",
+    "wooden",
+}
+
+GENERIC_NON_OBJECT_LABELS = {
+    "area",
+    "background",
+    "image",
+    "item",
+    "object",
+    "objects",
+    "part",
+    "parts",
+    "scene",
+    "stuff",
+    "surface",
+    "thing",
+    "things",
+}
+
+
+def sanitize_detection_label(value: Any) -> str:
+    """Normalize open-vocabulary detector phrases into stable object labels."""
+
+    return normalize_label(value)
+
+
+def is_noise_detection_label(value: Any) -> bool:
+    label = sanitize_detection_label(value)
+    if not label:
+        return True
+    tokens = [tok for tok in label.split("_") if tok]
+    if len(tokens) == 1 and tokens[0] in MATERIAL_ONLY_LABELS:
+        return True
+    if label in GENERIC_NON_OBJECT_LABELS:
+        return True
+    return False
 
 
 def object_stem(obj: Dict[str, Any]) -> str:

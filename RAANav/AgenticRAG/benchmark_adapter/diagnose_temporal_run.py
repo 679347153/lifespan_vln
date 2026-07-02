@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .common import as_path, write_json
+from .common import as_path, is_noise_detection_label, sanitize_detection_label, write_json
 
 
 def _read_json_optional(path: Path) -> Any:
@@ -49,6 +49,10 @@ def _count_by(records: Iterable[Dict[str, Any]], key: str) -> Dict[str, int]:
     counter: Counter[str] = Counter()
     for record in records:
         value = record.get(key)
+        if key == "label":
+            value = sanitize_detection_label(value)
+            if is_noise_detection_label(value):
+                continue
         if value is not None:
             counter[str(value)] += 1
     return dict(sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])))
@@ -66,8 +70,8 @@ def _top_labels(records: Iterable[Dict[str, Any]], *, limit: int = 20) -> List[D
     clip_dims: Counter[str] = Counter()
     positioned = 0
     for record in records:
-        label = str(record.get("label") or "").strip()
-        if not label:
+        label = sanitize_detection_label(record.get("label"))
+        if is_noise_detection_label(label):
             continue
         counter[label] += 1
         if record.get("pos_2d") is not None or record.get("pos_3d") is not None:
@@ -100,7 +104,9 @@ def _candidate_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         selected = record.get("selected_candidate")
         if isinstance(selected, dict):
             selected_backend[str(selected.get("sim_backend") or "unknown")] += 1
-            selected_labels[str(selected.get("label") or "unknown")] += 1
+            selected_label = sanitize_detection_label(selected.get("label"))
+            if selected_label and not is_noise_detection_label(selected_label):
+                selected_labels[selected_label] += 1
             selected_scores.append(_safe_float(selected.get("S_final")))
         reason = record.get("fallback_reason")
         if reason:
