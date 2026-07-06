@@ -143,42 +143,73 @@ DESCRIPTIVE_LABEL_TOKENS = {
 CANONICAL_PHRASE_LABELS = {
     "alarm_clock": "clock",
     "antique_ceramic_vase": "vase",
+    "bottles_wine_bottles": "wine_bottles",
     "brass_pot": "pot",
+    "brass_vase": "vase",
     "ceramic_vase": "vase",
     "chess_set": "chess",
     "coffee_table": "table",
     "desk_table": "table",
     "dining_table": "table",
     "floor_lamp": "lamp",
+    "horse_statue": "horse_statue",
+    "marble_bust": "marble_bust",
+    "metal_stool": "metal_stool",
+    "metal_stool_metal": "metal_stool",
     "shelf_cabinet": "cabinet",
+    "statue_horse": "horse_statue",
+    "statue_horse_statue": "horse_statue",
+    "stool_metal": "metal_stool",
+    "stool_metal_stool": "metal_stool",
     "table_lamp": "lamp",
     "tea_set": "tea_set",
+    "wine_bottles": "wine_bottles",
 }
 
 CANONICAL_OBJECT_TOKENS = {
     "apple",
+    "alarm",
     "bed",
     "book",
     "bottle",
+    "bottles",
     "bowl",
+    "bust",
     "cabinet",
     "cake",
     "camera",
     "chair",
     "chess",
     "clock",
+    "console",
     "cup",
     "desk",
+    "dessert",
+    "fruit",
+    "horse",
+    "horse_statue",
     "lamp",
+    "marble_bust",
     "megaphone",
+    "metal_stool",
     "mirror",
+    "pear",
+    "pears",
     "picture",
+    "pillow",
+    "pillows",
     "plant",
     "pot",
     "shelf",
     "sofa",
+    "statue",
+    "stool",
     "table",
+    "tea",
+    "tea_set",
+    "teapot",
     "vase",
+    "wine_bottles",
 }
 
 GENERIC_NON_OBJECT_LABELS = {
@@ -205,12 +236,25 @@ def sanitize_detection_label(value: Any) -> str:
     if not label:
         return ""
     tokens = [tok for tok in label.split("_") if tok]
+    if len(tokens) >= 2:
+        whole = "_".join(tokens)
+        if whole in CANONICAL_PHRASE_LABELS:
+            return CANONICAL_PHRASE_LABELS[whole]
     while tokens and tokens[-1] in DESCRIPTIVE_LABEL_TOKENS:
         tokens.pop()
     tokens = _collapse_repeated_phrase_blocks(_collapse_repeated_tokens(tokens))
     label = "_".join(tokens)
     if label in CANONICAL_PHRASE_LABELS:
         return CANONICAL_PHRASE_LABELS[label]
+    if "tea" in tokens and any(tok in {"pear", "pears", "apple", "cake"} for tok in tokens):
+        return ""
+    for phrase in sorted(CANONICAL_PHRASE_LABELS, key=lambda item: -len(item.split("_"))):
+        phrase_tokens = phrase.split("_")
+        if len(phrase_tokens) <= 1 or len(phrase_tokens) > len(tokens):
+            continue
+        for i in range(0, len(tokens) - len(phrase_tokens) + 1):
+            if tokens[i : i + len(phrase_tokens)] == phrase_tokens:
+                return CANONICAL_PHRASE_LABELS[phrase]
     object_tokens = [tok for tok in tokens if tok in CANONICAL_OBJECT_TOKENS]
     if len(tokens) > 1 and object_tokens:
         return object_tokens[-1]

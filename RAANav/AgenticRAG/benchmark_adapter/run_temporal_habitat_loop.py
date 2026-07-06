@@ -30,6 +30,7 @@ from .episode_to_queries import (
     load_target_name_map,
     query_from_subtask,
     query_label_matches,
+    query_label_similarity,
 )
 from .formal_scoring import CandidateScore, FusionParams, candidates_to_dict, rank_candidates
 from .habitat_vision_loop import HabitatVisionLoop
@@ -187,6 +188,105 @@ def _target_detected(
     return False
 
 
+def _target_detection_diagnostics(
+    detections: Iterable[Dict[str, Any]],
+    query: QuerySpec,
+    *,
+    subtask: Optional[Subtask] = None,
+    confirmation_mode: str = "spatial",
+    spatial_margin: float = 1.0,
+) -> Dict[str, Any]:
+    threshold: Optional[float] = None
+    target_pos: Optional[List[float]] = None
+    if subtask is not None:
+        target_pos = [float(subtask.target_position.x), float(subtask.target_position.z)]
+        threshold = max(float(subtask.success_radius), 0.0) + max(0.0, float(spatial_margin))
+
+    semantic_count = 0
+    positioned_count = 0
+    closest_dist: Optional[float] = None
+    closest_label: Optional[str] = None
+    closest_pos: Optional[List[float]] = None
+    confirmed = False
+    for det in detections:
+        if not query_label_matches(det.get("label"), query):
+            continue
+        semantic_count += 1
+        if confirmation_mode == "semantic" or subtask is None:
+            confirmed = True
+        det_pos = _detection_pos2d(det)
+        if det_pos is None or target_pos is None:
+            continue
+        positioned_count += 1
+        dist = euclidean_2d(det_pos, target_pos)
+        if closest_dist is None or dist < closest_dist:
+            closest_dist = dist
+            closest_label = normalize_label(det.get("label"))
+            closest_pos = [round(float(det_pos[0]), 6), round(float(det_pos[1]), 6)]
+        if threshold is not None and dist <= threshold:
+            confirmed = True
+
+    return {
+        "target_semantic_match_count": semantic_count,
+        "target_positioned_match_count": positioned_count,
+        "target_detection_confirmed": confirmed,
+        "target_confirm_threshold": round(float(threshold), 6) if threshold is not None else None,
+        "closest_target_detection_distance": round(float(closest_dist), 6) if closest_dist is not None else None,
+        "closest_target_detection_label": closest_label,
+        "closest_target_detection_pos": closest_pos,
+        "target_detection_distance_minus_threshold": (
+            round(float(closest_dist) - float(threshold), 6)
+            if closest_dist is not None and threshold is not None
+            else None
+        ),
+    }
+
+
+def _merge_target_detection_diagnostics(current: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+    if not current:
+        return dict(update)
+    merged = dict(current)
+    merged["target_semantic_match_count"] = int(merged.get("target_semantic_match_count", 0) or 0) + int(
+        update.get("target_semantic_match_count", 0) or 0
+    )
+    merged["target_positioned_match_count"] = int(merged.get("target_positioned_match_count", 0) or 0) + int(
+        update.get("target_positioned_match_count", 0) or 0
+    )
+    merged["target_detection_confirmed"] = bool(merged.get("target_detection_confirmed")) or bool(
+        update.get("target_detection_confirmed")
+    )
+    old_dist = merged.get("closest_target_detection_distance")
+    new_dist = update.get("closest_target_detection_distance")
+    if old_dist is None or (new_dist is not None and float(new_dist) < float(old_dist)):
+        merged["closest_target_detection_distance"] = new_dist
+        merged["closest_target_detection_label"] = update.get("closest_target_detection_label")
+        merged["closest_target_detection_pos"] = update.get("closest_target_detection_pos")
+        merged["target_detection_distance_minus_threshold"] = update.get("target_detection_distance_minus_threshold")
+    if merged.get("target_confirm_threshold") is None:
+        merged["target_confirm_threshold"] = update.get("target_confirm_threshold")
+    return merged
+
+
+def _annotate_candidate_debug(
+    candidates: List[Dict[str, Any]],
+    query: QuerySpec,
+    subtask: Subtask,
+) -> List[Dict[str, Any]]:
+    target = [float(subtask.target_position.x), float(subtask.target_position.z)]
+    out: List[Dict[str, Any]] = []
+    for rank, candidate in enumerate(candidates, start=1):
+        item = dict(candidate)
+        item["pre_nav_rank"] = rank
+        item["label_alias_match"] = query_label_matches(item.get("label"), query)
+        item["label_query_similarity"] = round(float(query_label_similarity(item.get("label"), query)), 6)
+        if "world_x" in item and "world_z" in item:
+            dist = euclidean_2d([item["world_x"], item["world_z"]], target)
+            item["distance_to_target"] = round(float(dist), 6)
+            item["within_success_radius"] = bool(dist <= float(subtask.success_radius))
+        out.append(item)
+    return out
+
+
 def _pose_from_candidate(candidate: CandidateScore, current_pose: Pose) -> Pose:
     return Pose(float(candidate.world_x), float(current_pose.y), float(candidate.world_z), float(current_pose.yaw))
 
@@ -327,6 +427,7 @@ def run_episode_temporal(
         fallback_count = 0
         last_candidates: List[Dict[str, Any]] = []
         final_pose = current_pose
+        target_detection_summary: Dict[str, Any] = {}
 
         for round_idx in range(max(1, int(args.max_rounds))):
             if subtask_steps >= int(args.max_steps_per_subtask):
@@ -347,13 +448,15 @@ def run_episode_temporal(
                 step=total_steps,
             ):
                 memory_events.append(event.to_dict())
-            if _target_detected(
+            obs_target_diag = _target_detection_diagnostics(
                 obs.detections,
                 query,
                 subtask=subtask,
                 confirmation_mode=args.target_confirmation_mode,
                 spatial_margin=args.target_confirmation_margin,
-            ):
+            )
+            target_detection_summary = _merge_target_detection_diagnostics(target_detection_summary, obs_target_diag)
+            if obs_target_diag.get("target_detection_confirmed"):
                 perception_found = True
                 final_pose = loop.current_pose or current_pose
                 break
@@ -368,7 +471,7 @@ def run_episode_temporal(
                 max_candidates=args.max_candidates,
                 clip_min_score=args.clip_min_score,
             )
-            last_candidates = candidates_to_dict(candidates)
+            last_candidates = _annotate_candidate_debug(candidates_to_dict(candidates), query, subtask)
             if candidates:
                 target_pose = _pose_from_candidate(candidates[0], loop.current_pose or current_pose)
                 fallback_reason = None
@@ -396,6 +499,8 @@ def run_episode_temporal(
                         "fallback_reason": fallback_reason,
                         "selected_candidate": last_candidates[0] if last_candidates else None,
                         "top_candidates": last_candidates,
+                        "target_position": [subtask.target_position.x, subtask.target_position.z],
+                        "success_radius": subtask.success_radius,
                         "planned_pose": to_json_dict(target_pose),
                         "final_pose": to_json_dict(final_pose),
                         "path": step_result.path,
@@ -421,13 +526,15 @@ def run_episode_temporal(
                 step=total_steps,
             ):
                 memory_events.append(event.to_dict())
-            if _target_detected(
+            post_target_diag = _target_detection_diagnostics(
                 post_obs.detections,
                 query,
                 subtask=subtask,
                 confirmation_mode=args.target_confirmation_mode,
                 spatial_margin=args.target_confirmation_margin,
-            ):
+            )
+            target_detection_summary = _merge_target_detection_diagnostics(target_detection_summary, post_target_diag)
+            if post_target_diag.get("target_detection_confirmed"):
                 perception_found = True
                 break
             if candidates:
@@ -495,16 +602,26 @@ def run_episode_temporal(
                     "found": benchmark_success,
                     "target_confirmation_mode": args.target_confirmation_mode,
                     "target_confirmation_margin": args.target_confirmation_margin,
+                    "success_radius": subtask.success_radius,
                     "sss": trace.steps,
                     "mra": bool(dists and dists[0] <= float(subtask.success_radius)),
                     "ghr3": any(d <= float(subtask.success_radius) for d in dists[:3]),
                     "ghr5": any(d <= float(subtask.success_radius) for d in dists[:5]),
+                    "ghr10": any(d <= float(subtask.success_radius) for d in dists[:10]),
                     "min_dist": min(dists) if dists else None,
+                    "top1_dist": dists[0] if dists else None,
+                    "top3_min_dist": min(dists[:3]) if dists[:3] else None,
+                    "top5_min_dist": min(dists[:5]) if dists[:5] else None,
+                    "top10_min_dist": min(dists[:10]) if dists[:10] else None,
                     "final_dist": final_dist,
+                    "final_minus_best_candidate_dist": (
+                        final_dist - min(dists) if dists else None
+                    ),
                     "fallback_count": fallback_count,
                     "memory_track_count": len(memory),
                     "peaks": last_candidates,
                     "target_position": [subtask.target_position.x, subtask.target_position.z],
+                    **target_detection_summary,
                 }
             )
         )

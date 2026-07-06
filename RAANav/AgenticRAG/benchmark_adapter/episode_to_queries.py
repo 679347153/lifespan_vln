@@ -7,20 +7,20 @@ from typing import Any, Dict, List, Optional
 
 from benchmark.schemas import Episode, Subtask
 
-from .common import as_path, normalize_label, token_overlap
+from .common import as_path, normalize_label, sanitize_detection_label, token_overlap
 
 
 DEFAULT_TARGET_NAME_MAP: Dict[str, List[str]] = {
     "alarm_clock_01": ["alarm_clock_01", "alarm_clock", "clock"],
     "antique_ceramic_vase_01": ["antique_ceramic_vase_01", "antique_ceramic_vase", "ceramic_vase", "vase"],
-    "brass_pot_01": ["brass_pot_01", "brass_pot", "pot"],
-    "brass_vase_03": ["brass_vase_03", "brass_vase", "vase"],
+    "brass_pot_01": ["brass_pot_01", "brass_pot", "pot", "vessel"],
+    "brass_vase_03": ["brass_vase_03", "brass_vase", "vase", "decorative_vase"],
     "camera_01": ["camera_01", "camera"],
-    "carrot_cake": ["carrot_cake", "cake"],
-    "chess_set": ["chess_set", "chess"],
+    "carrot_cake": ["carrot_cake", "cake", "dessert"],
+    "chess_set": ["chess_set", "chess", "board_game"],
     "classicconsole_01": ["classicconsole_01", "classic_console", "console"],
-    "food_apple_01": ["food_apple_01", "food_apple", "apple"],
-    "food_pears_asian_01": ["food_pears_asian_01", "food_pears_asian", "asian_pears", "pears", "pear"],
+    "food_apple_01": ["food_apple_01", "food_apple", "apple", "fruit"],
+    "food_pears_asian_01": ["food_pears_asian_01", "food_pears_asian", "asian_pears", "pears", "pear", "fruit"],
     "horse_statue_01": ["horse_statue_01", "horse_statue", "statue"],
     "marble_bust_01": ["marble_bust_01", "marble_bust", "bust"],
     "megaphone_01": ["megaphone_01", "megaphone"],
@@ -29,9 +29,9 @@ DEFAULT_TARGET_NAME_MAP: Dict[str, List[str]] = {
     "potted_plant_02": ["potted_plant_02", "potted_plant", "plant"],
     "round_wooden_table_01": ["round_wooden_table_01", "round_wooden_table", "wooden_table", "table"],
     "side_table_tall_01": ["side_table_tall_01", "side_table_tall", "side_table", "table"],
-    "tea_set_01": ["tea_set_01", "tea_set", "tea"],
+    "tea_set_01": ["tea_set_01", "tea_set", "teapot", "cup", "tea"],
     "throw_pillows_01": ["throw_pillows_01", "throw_pillows", "pillows", "pillow"],
-    "wine_bottles_01": ["wine_bottles_01", "wine_bottles", "bottle"],
+    "wine_bottles_01": ["wine_bottles_01", "wine_bottles", "bottles", "bottle"],
     "wooden_table_02": ["wooden_table_02", "wooden_table", "table"],
 }
 
@@ -137,7 +137,7 @@ def aliases_for_label(
 
 
 def query_label_matches(label: Any, query: QuerySpec, *, threshold: float = 0.6) -> bool:
-    norm = _collapse_repeated_tokens(normalize_label(label))
+    norm = _collapse_repeated_tokens(sanitize_detection_label(label) or normalize_label(label))
     aliases = query.alias_labels or [query.query_label]
     for alias in aliases:
         if not alias:
@@ -150,7 +150,7 @@ def query_label_matches(label: Any, query: QuerySpec, *, threshold: float = 0.6)
 
 
 def query_label_similarity(label: Any, query: QuerySpec) -> float:
-    norm = _collapse_repeated_tokens(normalize_label(label))
+    norm = _collapse_repeated_tokens(sanitize_detection_label(label) or normalize_label(label))
     aliases = query.alias_labels or [query.query_label]
     if norm in aliases:
         return 1.0

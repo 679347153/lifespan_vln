@@ -330,9 +330,24 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
                 "mra": bool(record.get("mra")),
                 "ghr3": bool(record.get("ghr3")),
                 "ghr5": bool(record.get("ghr5")),
+                "ghr10": bool(record.get("ghr10")),
                 "min_dist": _safe_float(record.get("min_dist")),
+                "top1_dist": _safe_float(record.get("top1_dist")),
+                "top3_min_dist": _safe_float(record.get("top3_min_dist")),
+                "top5_min_dist": _safe_float(record.get("top5_min_dist")),
+                "top10_min_dist": _safe_float(record.get("top10_min_dist")),
                 "final_dist": _safe_float(record.get("final_dist")),
+                "final_minus_best_candidate_dist": _safe_float(record.get("final_minus_best_candidate_dist")),
                 "success_radius": _safe_float(record.get("success_radius") or record.get("target_success_radius")),
+                "target_confirm_threshold": _safe_float(record.get("target_confirm_threshold")),
+                "target_semantic_match_count": int(record.get("target_semantic_match_count", 0) or 0),
+                "target_positioned_match_count": int(record.get("target_positioned_match_count", 0) or 0),
+                "closest_target_detection_distance": _safe_float(record.get("closest_target_detection_distance")),
+                "closest_target_detection_label": record.get("closest_target_detection_label"),
+                "closest_target_detection_pos": record.get("closest_target_detection_pos"),
+                "target_detection_distance_minus_threshold": _safe_float(
+                    record.get("target_detection_distance_minus_threshold")
+                ),
                 "fallback_count": int(record.get("fallback_count", 0) or 0),
                 "candidate_rounds": candidate_rounds,
                 "rounds_with_candidates": rounds_with_candidates,
@@ -366,6 +381,13 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
 def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     final_dists = [_safe_float(r.get("final_dist")) for r in records]
     min_dists = [_safe_float(r.get("min_dist")) for r in records]
+    top1_dists = [_safe_float(r.get("top1_dist")) for r in records]
+    top3_min_dists = [_safe_float(r.get("top3_min_dist")) for r in records]
+    top5_min_dists = [_safe_float(r.get("top5_min_dist")) for r in records]
+    top10_min_dists = [_safe_float(r.get("top10_min_dist")) for r in records]
+    final_minus_best = [_safe_float(r.get("final_minus_best_candidate_dist")) for r in records]
+    closest_detection_dists = [_safe_float(r.get("closest_target_detection_distance")) for r in records]
+    detection_margin_deltas = [_safe_float(r.get("target_detection_distance_minus_threshold")) for r in records]
     fallback_counts = [_safe_float(r.get("fallback_count"), 0.0) for r in records]
     subtasks = len(records)
     found = sum(1 for r in records if bool(r.get("found")))
@@ -373,6 +395,9 @@ def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     mra = sum(1 for r in records if bool(r.get("mra")))
     ghr3 = sum(1 for r in records if bool(r.get("ghr3")))
     ghr5 = sum(1 for r in records if bool(r.get("ghr5")))
+    ghr10 = sum(1 for r in records if bool(r.get("ghr10")))
+    semantic_match_subtasks = sum(1 for r in records if int(r.get("target_semantic_match_count", 0) or 0) > 0)
+    positioned_match_subtasks = sum(1 for r in records if int(r.get("target_positioned_match_count", 0) or 0) > 0)
     avg_final_dist = _mean(final_dists)
     avg_candidate_min_dist = _mean(min_dists)
     return {
@@ -388,17 +413,30 @@ def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "ghr3_rate": round(ghr3 / subtasks, 6) if subtasks else None,
         "ghr5": ghr5,
         "ghr5_rate": round(ghr5 / subtasks, 6) if subtasks else None,
+        "ghr10": ghr10,
+        "ghr10_rate": round(ghr10 / subtasks, 6) if subtasks else None,
         "ghr5_to_found_gap": ghr5 - found,
         "avg_final_dist": avg_final_dist,
         "best_final_dist": min([v for v in final_dists if v is not None], default=None),
         "avg_candidate_min_dist": avg_candidate_min_dist,
         "best_candidate_min_dist": min([v for v in min_dists if v is not None], default=None),
+        "avg_top1_dist": _mean(top1_dists),
+        "avg_top3_min_dist": _mean(top3_min_dists),
+        "avg_top5_min_dist": _mean(top5_min_dists),
+        "avg_top10_min_dist": _mean(top10_min_dists),
         "avg_final_minus_candidate_min_dist": (
             round(float(avg_final_dist) - float(avg_candidate_min_dist), 6)
             if avg_final_dist is not None and avg_candidate_min_dist is not None
             else None
         ),
+        "avg_final_minus_best_candidate_dist": _mean(final_minus_best),
         "avg_fallback_count": _mean(fallback_counts),
+        "target_semantic_match_subtasks": semantic_match_subtasks,
+        "target_semantic_match_rate": round(semantic_match_subtasks / subtasks, 6) if subtasks else None,
+        "target_positioned_match_subtasks": positioned_match_subtasks,
+        "target_positioned_match_rate": round(positioned_match_subtasks / subtasks, 6) if subtasks else None,
+        "avg_closest_target_detection_distance": _mean(closest_detection_dists),
+        "avg_target_detection_distance_minus_threshold": _mean(detection_margin_deltas),
         "by_task_type": _count_by(records, "task_type"),
         "by_query_modality": _count_by(records, "query_modality"),
         "by_seen_layout_count_before": _count_by(records, "seen_layout_count_before"),
