@@ -125,6 +125,244 @@ def _candidate_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _subtask_key(record: Dict[str, Any]) -> str:
+    episode_id = record.get("episode_id")
+    subtask_id = record.get("subtask_id")
+    if episode_id is None and subtask_id is None:
+        return ""
+    return f"{episode_id}::{subtask_id}"
+
+
+def _candidate_list(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    top = record.get("top_candidates")
+    if isinstance(top, list):
+        return [item for item in top if isinstance(item, dict)]
+    selected = record.get("selected_candidate")
+    if isinstance(selected, dict):
+        return [selected]
+    candidate = record.get("candidate")
+    if isinstance(candidate, dict):
+        return [candidate]
+    return []
+
+
+def _selected_candidate(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    selected = record.get("selected_candidate")
+    if isinstance(selected, dict):
+        return selected
+    top = _candidate_list(record)
+    if top:
+        return top[0]
+    candidate = record.get("candidate")
+    if isinstance(candidate, dict):
+        return candidate
+    return None
+
+
+def _success_gap_decision(diagnostics: Dict[str, Any], candidates: Dict[str, Any]) -> Dict[str, Any]:
+    subtasks = int(diagnostics.get("subtasks", 0) or 0)
+    found_rate = _safe_float(diagnostics.get("found_rate"), 0.0) or 0.0
+    ghr5_rate = _safe_float(diagnostics.get("ghr5_rate"), 0.0) or 0.0
+    perception_found_rate = _safe_float(diagnostics.get("perception_found_rate"), 0.0) or 0.0
+    candidate_recall_rate = _safe_float(candidates.get("candidate_recall_rate"), 0.0) or 0.0
+    ghr5_to_found_gap = int(diagnostics.get("ghr5_to_found_gap", 0) or 0)
+    ghr5_gap_rate = round(ghr5_to_found_gap / subtasks, 6) if subtasks else None
+    perception_gap_rate = round(perception_found_rate - found_rate, 6)
+
+    thresholds = {
+        "topk_rerank": {
+            "ghr5_rate_min": 0.45,
+            "found_rate_max": 0.25,
+            "ghr5_to_found_gap_rate_min": 0.20,
+        },
+        "fix_retrieval_first": {
+            "ghr5_rate_max": 0.35,
+            "candidate_recall_rate_max": 0.50,
+        },
+        "inspect_spatial_confirmation": {
+            "perception_found_minus_found_min": 0.20,
+        },
+    }
+
+    if ghr5_rate >= 0.45 and found_rate <= 0.25 and (ghr5_gap_rate or 0.0) >= 0.20:
+        recommendation = "implement_topk_nav_rerank"
+        reason = "GHR@5 已有召回但 Found 明显偏低，优先检查导航选点、路径代价、可见性和成功半径转换。"
+    elif ghr5_rate < 0.35 or candidate_recall_rate < 0.50:
+        recommendation = "fix_perception_retrieval_first"
+        reason = "候选召回或 GHR@5 偏低，优先继续修 perception、target name map、CLIP 阈值和 label sanitizer。"
+    elif perception_gap_rate >= 0.20:
+        recommendation = "inspect_spatial_confirmation_depth"
+        reason = "perception_found 明显高于 benchmark found，优先检查 spatial confirmation、深度反投影偏差和 success radius。"
+    else:
+        recommendation = "continue_diagnosis_before_strategy_change"
+        reason = "当前指标未满足明确触发条件，建议先结合 HTML 查看候选距离、fallback 和目标确认失败样例。"
+
+    return {
+        "recommendation": recommendation,
+        "reason": reason,
+        "thresholds": thresholds,
+        "observed": {
+            "subtasks": subtasks,
+            "found_rate": round(found_rate, 6),
+            "ghr5_rate": round(ghr5_rate, 6),
+            "candidate_recall_rate": round(candidate_recall_rate, 6),
+            "perception_found_rate": round(perception_found_rate, 6),
+            "ghr5_to_found_gap": ghr5_to_found_gap,
+            "ghr5_to_found_gap_rate": ghr5_gap_rate,
+            "perception_found_minus_found": perception_gap_rate,
+        },
+    }
+
+
+def _success_gap_bucket(record: Dict[str, Any], candidate_info: Dict[str, Any]) -> Dict[str, Any]:
+    flags: List[str] = []
+    found = bool(record.get("found"))
+    perception_found = bool(record.get("perception_found"))
+    ghr5 = bool(record.get("ghr5"))
+    rounds_with_candidates = int(candidate_info.get("rounds_with_candidates", 0) or 0)
+    candidate_rounds = int(candidate_info.get("candidate_rounds", 0) or 0)
+    fallback_count = int(record.get("fallback_count", 0) or 0)
+    success_radius = _safe_float(record.get("success_radius") or record.get("target_success_radius"))
+    min_dist = _safe_float(record.get("min_dist"))
+    final_dist = _safe_float(record.get("final_dist"))
+
+    if found:
+        return {"bucket": "found", "flags": ["found"]}
+    if not perception_found:
+        flags.append("perception_goal_not_confirmed")
+    if candidate_rounds <= 0 or rounds_with_candidates <= 0:
+        flags.append("retrieval_no_candidates")
+    if not ghr5:
+        flags.append("candidates_far_from_goal")
+    if ghr5:
+        flags.append("candidate_near_but_not_converted_to_success")
+    if perception_found:
+        flags.append("perception_goal_mismatch_or_false_positive_confirmation")
+    if fallback_count > 0:
+        flags.append("fallback_used")
+    if (
+        success_radius is not None
+        and min_dist is not None
+        and final_dist is not None
+        and min_dist <= success_radius
+        and final_dist > success_radius
+    ):
+        flags.append("navigation_or_success_radius_failed")
+
+    if "perception_goal_mismatch_or_false_positive_confirmation" in flags:
+        bucket = "perception_goal_mismatch_or_false_positive_confirmation"
+    elif "retrieval_no_candidates" in flags:
+        bucket = "retrieval_no_candidates"
+    elif "candidates_far_from_goal" in flags:
+        bucket = "candidates_far_from_goal"
+    elif "navigation_or_success_radius_failed" in flags:
+        bucket = "navigation_or_success_radius_failed"
+    elif "candidate_near_but_not_converted_to_success" in flags:
+        bucket = "candidate_near_but_not_converted_to_success"
+    else:
+        bucket = "unsuccessful_unknown"
+    return {"bucket": bucket, "flags": flags}
+
+
+def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
+    output_dir = as_path(output_dir)
+    diagnostics_records = _read_jsonl(output_dir / "memory_diagnostics.jsonl")
+    candidate_records = _read_jsonl(output_dir / "candidate_traces.jsonl")
+    diagnostic_stats = _diagnostic_stats(diagnostics_records)
+    candidate_stats = _candidate_stats(candidate_records)
+
+    candidates_by_subtask: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for record in candidate_records:
+        key = _subtask_key(record)
+        if key:
+            candidates_by_subtask[key].append(record)
+
+    rows: List[Dict[str, Any]] = []
+    bucket_counter: Counter[str] = Counter()
+    flag_counter: Counter[str] = Counter()
+    for record in diagnostics_records:
+        key = _subtask_key(record)
+        cand_records = candidates_by_subtask.get(key, [])
+        candidate_rounds = len(cand_records)
+        rounds_with_candidates = sum(1 for item in cand_records if _candidate_list(item))
+        selected_labels: Counter[str] = Counter()
+        selected_backends: Counter[str] = Counter()
+        selected_scores: List[Optional[float]] = []
+        top_candidate_count = 0
+        for item in cand_records:
+            top = _candidate_list(item)
+            top_candidate_count += len(top)
+            selected = _selected_candidate(item)
+            if not selected:
+                continue
+            label = sanitize_detection_label(selected.get("label"))
+            if label and not is_noise_detection_label(label):
+                selected_labels[label] += 1
+            backend = selected.get("sim_backend") or selected.get("backend")
+            if backend:
+                selected_backends[str(backend)] += 1
+            selected_scores.append(_safe_float(selected.get("S_final") or selected.get("score")))
+
+        candidate_info = {
+            "candidate_rounds": candidate_rounds,
+            "rounds_with_candidates": rounds_with_candidates,
+        }
+        bucket_info = _success_gap_bucket(record, candidate_info)
+        bucket_counter[bucket_info["bucket"]] += 1
+        for flag in bucket_info["flags"]:
+            flag_counter[flag] += 1
+
+        rows.append(
+            {
+                "episode_id": record.get("episode_id"),
+                "subtask_id": record.get("subtask_id"),
+                "scene_name": record.get("scene_name"),
+                "layout_id": record.get("layout_id"),
+                "state_index": record.get("state_index"),
+                "seen_layout_count_before": record.get("seen_layout_count_before"),
+                "task_type": record.get("task_type"),
+                "query_modality": record.get("query_modality"),
+                "target_object": record.get("target_object"),
+                "query_label": record.get("query_label"),
+                "alias_labels": record.get("alias_labels"),
+                "found": bool(record.get("found")),
+                "perception_found": bool(record.get("perception_found")),
+                "mra": bool(record.get("mra")),
+                "ghr3": bool(record.get("ghr3")),
+                "ghr5": bool(record.get("ghr5")),
+                "min_dist": _safe_float(record.get("min_dist")),
+                "final_dist": _safe_float(record.get("final_dist")),
+                "success_radius": _safe_float(record.get("success_radius") or record.get("target_success_radius")),
+                "fallback_count": int(record.get("fallback_count", 0) or 0),
+                "candidate_rounds": candidate_rounds,
+                "rounds_with_candidates": rounds_with_candidates,
+                "top_candidate_count": top_candidate_count,
+                "selected_labels": dict(selected_labels.most_common(8)),
+                "selected_backend": dict(selected_backends.most_common(8)),
+                "avg_selected_score": _mean(selected_scores),
+                "failure_bucket": bucket_info["bucket"],
+                "failure_flags": bucket_info["flags"],
+            }
+        )
+
+    summary = {
+        **diagnostic_stats,
+        "candidate_recall_rate": candidate_stats.get("candidate_recall_rate"),
+        "rounds_with_candidates": candidate_stats.get("rounds_with_candidates"),
+        "rounds_without_candidates": candidate_stats.get("rounds_without_candidates"),
+        "avg_candidates_per_round": candidate_stats.get("avg_candidates_per_round"),
+        "bucket_counts": dict(bucket_counter.most_common()),
+        "flag_counts": dict(flag_counter.most_common()),
+    }
+    decision = _success_gap_decision(diagnostic_stats, candidate_stats)
+    return {
+        "output_dir": str(output_dir),
+        "summary": summary,
+        "decision": decision,
+        "subtasks": rows,
+    }
+
+
 def _diagnostic_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     final_dists = [_safe_float(r.get("final_dist")) for r in records]
     min_dists = [_safe_float(r.get("min_dist")) for r in records]
@@ -381,6 +619,7 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
     }
     diagnostic_stats = _diagnostic_stats(diagnostics_records)
     candidate_stats = _candidate_stats(candidate_records)
+    success_gap_summary = _success_gap_decision(diagnostic_stats, candidate_stats)
     memory_stats = _memory_stats(memory_records)
     memory_stats.update(_scene_memory_stats(output_dir))
     temporal_trend = _temporal_trend(temporal_summary)
@@ -404,6 +643,7 @@ def diagnose(output_dir: Path) -> Dict[str, Any]:
         "observations": observation_stats,
         "diagnostics": diagnostic_stats,
         "candidates": candidate_stats,
+        "success_gap_summary": success_gap_summary,
         "memory": memory_stats,
         "negative_feedback": {
             "events": len(feedback_records),
@@ -427,10 +667,24 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Diagnose run_temporal_habitat_loop output files.")
     parser.add_argument("--output-dir", required=True, help="Output directory produced by run_temporal_habitat_loop.")
     parser.add_argument("--write-json", default="", help="Optional path for a diagnosis JSON report.")
+    parser.add_argument(
+        "--write-success-gap-report",
+        default="",
+        help=(
+            "Optional path for a per-subtask success gap report. "
+            "If omitted and --write-json is set, writes success_gap_report.json next to the diagnosis JSON."
+        ),
+    )
     args = parser.parse_args(argv)
-    report = diagnose(Path(args.output_dir))
+    output_dir = Path(args.output_dir)
+    report = diagnose(output_dir)
     if args.write_json:
         write_json(args.write_json, report)
+    success_gap_path = args.write_success_gap_report
+    if not success_gap_path and args.write_json:
+        success_gap_path = str(Path(args.write_json).with_name("success_gap_report.json"))
+    if success_gap_path:
+        write_json(success_gap_path, build_success_gap_report(output_dir))
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
