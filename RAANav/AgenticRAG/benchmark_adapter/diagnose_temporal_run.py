@@ -90,6 +90,7 @@ def _candidate_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     rounds_with_candidates = 0
     selected_backend: Counter[str] = Counter()
     selected_labels: Counter[str] = Counter()
+    selected_match_strength: Counter[str] = Counter()
     fallback_reasons: Counter[str] = Counter()
     selected_scores: List[Optional[float]] = []
     candidate_counts: List[int] = []
@@ -107,6 +108,7 @@ def _candidate_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             selected_label = sanitize_detection_label(selected.get("label"))
             if selected_label and not is_noise_detection_label(selected_label):
                 selected_labels[selected_label] += 1
+            selected_match_strength[str(selected.get("label_alias_match_strength") or "unknown")] += 1
             selected_scores.append(_safe_float(selected.get("S_final")))
         reason = record.get("fallback_reason")
         if reason:
@@ -122,6 +124,7 @@ def _candidate_stats(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "fallback_reasons": dict(fallback_reasons),
         "selected_backend": dict(selected_backend),
         "selected_labels": dict(selected_labels.most_common(20)),
+        "selected_match_strength": dict(selected_match_strength.most_common()),
     }
 
 
@@ -287,6 +290,7 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
         rounds_with_candidates = sum(1 for item in cand_records if _candidate_list(item))
         selected_labels: Counter[str] = Counter()
         selected_backends: Counter[str] = Counter()
+        selected_strengths: Counter[str] = Counter()
         selected_scores: List[Optional[float]] = []
         top_candidate_count = 0
         for item in cand_records:
@@ -301,6 +305,7 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
             backend = selected.get("sim_backend") or selected.get("backend")
             if backend:
                 selected_backends[str(backend)] += 1
+            selected_strengths[str(selected.get("label_alias_match_strength") or "unknown")] += 1
             selected_scores.append(_safe_float(selected.get("S_final") or selected.get("score")))
 
         candidate_info = {
@@ -325,6 +330,8 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
                 "target_object": record.get("target_object"),
                 "query_label": record.get("query_label"),
                 "alias_labels": record.get("alias_labels"),
+                "strong_alias_labels": record.get("strong_alias_labels"),
+                "weak_alias_labels": record.get("weak_alias_labels"),
                 "found": bool(record.get("found")),
                 "perception_found": bool(record.get("perception_found")),
                 "mra": bool(record.get("mra")),
@@ -354,6 +361,7 @@ def build_success_gap_report(output_dir: Path) -> Dict[str, Any]:
                 "top_candidate_count": top_candidate_count,
                 "selected_labels": dict(selected_labels.most_common(8)),
                 "selected_backend": dict(selected_backends.most_common(8)),
+                "selected_match_strength": dict(selected_strengths.most_common()),
                 "avg_selected_score": _mean(selected_scores),
                 "failure_bucket": bucket_info["bucket"],
                 "failure_flags": bucket_info["flags"],

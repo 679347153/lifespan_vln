@@ -1,24 +1,90 @@
 {
-  "alarm_clock_01": ["alarm_clock_01", "alarm_clock", "clock"],
-  "antique_ceramic_vase_01": ["antique_ceramic_vase_01", "antique_ceramic_vase", "ceramic_vase", "vase"],
-  "brass_pot_01": ["brass_pot_01", "brass_pot", "pot", "vessel"],
-  "brass_vase_03": ["brass_vase_03", "brass_vase", "vase", "decorative_vase"],
-  "camera_01": ["camera_01", "camera"],
-  "carrot_cake": ["carrot_cake", "cake", "dessert"],
-  "chess_set": ["chess_set", "chess", "board_game"],
-  "classicconsole_01": ["classicconsole_01", "classic_console", "console"],
-  "food_apple_01": ["food_apple_01", "food_apple", "apple", "fruit"],
-  "food_pears_asian_01": ["food_pears_asian_01", "food_pears_asian", "asian_pears", "pears", "pear", "fruit"],
-  "horse_statue_01": ["horse_statue_01", "horse_statue", "statue"],
-  "marble_bust_01": ["marble_bust_01", "marble_bust", "bust"],
-  "megaphone_01": ["megaphone_01", "megaphone"],
-  "metal_stool_02": ["metal_stool_02", "metal_stool", "stool"],
-  "potted_plant_01": ["potted_plant_01", "potted_plant", "plant"],
-  "potted_plant_02": ["potted_plant_02", "potted_plant", "plant"],
-  "round_wooden_table_01": ["round_wooden_table_01", "round_wooden_table", "wooden_table", "table"],
-  "side_table_tall_01": ["side_table_tall_01", "side_table_tall", "side_table", "table"],
-  "tea_set_01": ["tea_set_01", "tea_set", "teapot", "cup", "tea"],
-  "throw_pillows_01": ["throw_pillows_01", "throw_pillows", "pillows", "pillow"],
-  "wine_bottles_01": ["wine_bottles_01", "wine_bottles", "bottles", "bottle"],
-  "wooden_table_02": ["wooden_table_02", "wooden_table", "table"]
+  "alarm_clock_01": {
+    "strong": ["alarm_clock_01", "alarm_clock", "clock"],
+    "weak": []
+  },
+  "antique_ceramic_vase_01": {
+    "strong": ["antique_ceramic_vase_01", "antique_ceramic_vase", "ceramic_vase", "vase"],
+    "weak": []
+  },
+  "brass_pot_01": {
+    "strong": ["brass_pot_01", "brass_pot", "pot"],
+    "weak": ["vessel"]
+  },
+  "brass_vase_03": {
+    "strong": ["brass_vase_03", "brass_vase", "vase"],
+    "weak": ["decorative_vase"]
+  },
+  "camera_01": {
+    "strong": ["camera_01", "camera"],
+    "weak": []
+  },
+  "carrot_cake": {
+    "strong": ["carrot_cake", "cake"],
+    "weak": ["dessert"]
+  },
+  "chess_set": {
+    "strong": ["chess_set", "chess"],
+    "weak": ["board_game"]
+  },
+  "classicconsole_01": {
+    "strong": ["classicconsole_01", "classic_console", "console"],
+    "weak": []
+  },
+  "food_apple_01": {
+    "strong": ["food_apple_01", "food_apple", "apple"],
+    "weak": ["fruit"]
+  },
+  "food_pears_asian_01": {
+    "strong": ["food_pears_asian_01", "food_pears_asian", "asian_pears", "pears", "pear"],
+    "weak": ["fruit"]
+  },
+  "horse_statue_01": {
+    "strong": ["horse_statue_01", "horse_statue"],
+    "weak": ["statue"]
+  },
+  "marble_bust_01": {
+    "strong": ["marble_bust_01", "marble_bust"],
+    "weak": ["bust"]
+  },
+  "megaphone_01": {
+    "strong": ["megaphone_01", "megaphone"],
+    "weak": []
+  },
+  "metal_stool_02": {
+    "strong": ["metal_stool_02", "metal_stool"],
+    "weak": ["stool"]
+  },
+  "potted_plant_01": {
+    "strong": ["potted_plant_01", "potted_plant", "plant"],
+    "weak": []
+  },
+  "potted_plant_02": {
+    "strong": ["potted_plant_02", "potted_plant", "plant"],
+    "weak": []
+  },
+  "round_wooden_table_01": {
+    "strong": ["round_wooden_table_01", "round_wooden_table", "wooden_table", "table"],
+    "weak": []
+  },
+  "side_table_tall_01": {
+    "strong": ["side_table_tall_01", "side_table_tall", "side_table", "table"],
+    "weak": []
+  },
+  "tea_set_01": {
+    "strong": ["tea_set_01", "tea_set", "teapot"],
+    "weak": ["cup", "tea"]
+  },
+  "throw_pillows_01": {
+    "strong": ["throw_pillows_01", "throw_pillows", "pillows"],
+    "weak": ["pillow"]
+  },
+  "wine_bottles_01": {
+    "strong": ["wine_bottles_01", "wine_bottles"],
+    "weak": ["bottles", "bottle"]
+  },
+  "wooden_table_02": {
+    "strong": ["wooden_table_02", "wooden_table", "table"],
+    "weak": []
+  }
 }

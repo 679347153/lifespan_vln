@@ -26,9 +26,12 @@ from .common import as_path, euclidean_2d, normalize_label, write_json
 from .dataset_index import DatasetIndex
 from .episode_to_queries import (
     QuerySpec,
+    TargetNameMap,
+    WEAK_ALIAS_SIMILARITY_CAP,
     aliases_for_label,
     load_target_name_map,
     query_from_subtask,
+    query_label_match_strength,
     query_label_matches,
     query_label_similarity,
 )
@@ -103,7 +106,7 @@ def _label_for_prompt(value: Any) -> str:
 def _collect_prompt_labels(
     episodes: Iterable[Episode],
     *,
-    target_name_map: Optional[Dict[str, List[str]]] = None,
+    target_name_map: Optional[TargetNameMap] = None,
     normalize_target_names: bool = True,
 ) -> List[str]:
     labels: List[str] = []
@@ -277,7 +280,10 @@ def _annotate_candidate_debug(
     for rank, candidate in enumerate(candidates, start=1):
         item = dict(candidate)
         item["pre_nav_rank"] = rank
-        item["label_alias_match"] = query_label_matches(item.get("label"), query)
+        match_strength = query_label_match_strength(item.get("label"), query)
+        item["label_alias_match_strength"] = match_strength
+        item["label_alias_match"] = match_strength == "strong"
+        item["label_weak_alias_match"] = match_strength == "weak"
         item["label_query_similarity"] = round(float(query_label_similarity(item.get("label"), query)), 6)
         if "world_x" in item and "world_z" in item:
             dist = euclidean_2d([item["world_x"], item["world_z"]], target)
@@ -334,7 +340,7 @@ def _rank_with_remote_clip(
     if query.language_prompt:
         text = query.language_prompt
     else:
-        text = " . ".join(alias.replace("_", " ") for alias in (query.alias_labels or [query.query_label])[:4])
+        text = " . ".join(alias.replace("_", " ") for alias in (query.alias_labels or [query.query_label])[:6])
     sims = loop.detector.clip_text_image_similarity(
         text,
         [obj.clip_embedding for obj in objects],
@@ -346,17 +352,22 @@ def _rank_with_remote_clip(
     obj_by_id = {obj.obj_id: obj for obj in objects}
     for item in sims:
         obj_id = str(item.get("id", ""))
-        score = float(item.get("score", 0.0) or 0.0)
+        raw_score = float(item.get("score", 0.0) or 0.0)
         obj = obj_by_id.get(obj_id)
         if obj is None or not obj.pos_2d:
             continue
+        match_strength = query_label_match_strength(obj.label, query)
+        score = min(raw_score, WEAK_ALIAS_SIMILARITY_CAP) if match_strength == "weak" else raw_score
+        score_note = f"remote_clip={raw_score:.4f}"
+        if match_strength == "weak" and score != raw_score:
+            score_note += f",weak_alias_cap={score:.4f}"
         if obj_id in by_id:
             cand = by_id[obj_id]
             cand.R_sim = round(max(float(cand.R_sim), score), 6)
             cand.S_rag = round(max(float(cand.S_rag), score), 6)
             cand.S_final = round(max(float(cand.S_final), score), 6)
             cand.sim_backend = f"{cand.sim_backend}+remote_clip"
-            cand.reason = f"{cand.reason},remote_clip={score:.4f}"
+            cand.reason = f"{cand.reason},{score_note}"
             continue
         stability = max(0.0, min(1.0, float(obj.stability if obj.stability is not None else 0.5)))
         exist_prob = max(0.0, min(1.0, float(obj.exist_prob if obj.exist_prob is not None else 1.0)))
@@ -380,7 +391,7 @@ def _rank_with_remote_clip(
                 stability_bucket="high" if stability >= 0.67 else "medium" if stability >= 0.34 else "low",
                 query_modality=image_index.query_modality(query),
                 sim_backend="remote_clip_text_image",
-                reason=f"remote_clip={score:.4f}",
+                reason=score_note,
             )
         )
     candidates.sort(key=lambda cand: (-float(cand.S_final), cand.obj_id))
@@ -597,6 +608,8 @@ def run_episode_temporal(
                     "target_object": subtask.target_object,
                     "query_label": query.query_label,
                     "alias_labels": query.alias_labels,
+                    "strong_alias_labels": query.strong_alias_labels,
+                    "weak_alias_labels": query.weak_alias_labels,
                     "query_modality": image_index.query_modality(query),
                     "perception_found": perception_found,
                     "found": benchmark_success,
