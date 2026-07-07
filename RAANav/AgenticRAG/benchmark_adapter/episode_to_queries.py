@@ -16,15 +16,15 @@ WEAK_ALIAS_SIMILARITY_CAP = 0.35
 
 
 DEFAULT_TARGET_NAME_MAP: TargetNameMap = {
-    "alarm_clock_01": {"strong": ["alarm_clock_01", "alarm_clock", "clock"], "weak": []},
+    "alarm_clock_01": {"strong": ["alarm_clock_01", "alarm_clock", "clock"], "weak": ["alarm"]},
     "antique_ceramic_vase_01": {
         "strong": ["antique_ceramic_vase_01", "antique_ceramic_vase", "ceramic_vase", "vase"],
         "weak": [],
     },
-    "brass_pot_01": {"strong": ["brass_pot_01", "brass_pot", "pot"], "weak": ["vessel"]},
-    "brass_vase_03": {"strong": ["brass_vase_03", "brass_vase", "vase"], "weak": ["decorative_vase"]},
+    "brass_pot_01": {"strong": ["brass_pot_01", "brass_pot", "pot"], "weak": ["brass", "vessel"]},
+    "brass_vase_03": {"strong": ["brass_vase_03", "brass_vase", "vase"], "weak": ["brass", "decorative_vase"]},
     "camera_01": {"strong": ["camera_01", "camera"], "weak": []},
-    "carrot_cake": {"strong": ["carrot_cake", "cake"], "weak": ["dessert"]},
+    "carrot_cake": {"strong": ["carrot_cake", "cake"], "weak": ["carrot", "dessert"]},
     "chess_set": {"strong": ["chess_set", "chess"], "weak": ["board_game"]},
     "classicconsole_01": {"strong": ["classicconsole_01", "classic_console", "console"], "weak": []},
     "food_apple_01": {"strong": ["food_apple_01", "food_apple", "apple"], "weak": ["fruit"]},
@@ -32,8 +32,8 @@ DEFAULT_TARGET_NAME_MAP: TargetNameMap = {
         "strong": ["food_pears_asian_01", "food_pears_asian", "asian_pears", "pears", "pear"],
         "weak": ["fruit"],
     },
-    "horse_statue_01": {"strong": ["horse_statue_01", "horse_statue"], "weak": ["statue"]},
-    "marble_bust_01": {"strong": ["marble_bust_01", "marble_bust"], "weak": ["bust"]},
+    "horse_statue_01": {"strong": ["horse_statue_01", "horse_statue"], "weak": ["horse", "statue"]},
+    "marble_bust_01": {"strong": ["marble_bust_01", "marble_bust"], "weak": ["marble", "bust"]},
     "megaphone_01": {"strong": ["megaphone_01", "megaphone"], "weak": []},
     "metal_stool_02": {"strong": ["metal_stool_02", "metal_stool"], "weak": ["stool"]},
     "potted_plant_01": {"strong": ["potted_plant_01", "potted_plant", "plant"], "weak": []},
@@ -42,10 +42,10 @@ DEFAULT_TARGET_NAME_MAP: TargetNameMap = {
         "strong": ["round_wooden_table_01", "round_wooden_table", "wooden_table", "table"],
         "weak": [],
     },
-    "side_table_tall_01": {"strong": ["side_table_tall_01", "side_table_tall", "side_table", "table"], "weak": []},
+    "side_table_tall_01": {"strong": ["side_table_tall_01", "side_table_tall", "side_table", "table"], "weak": ["side"]},
     "tea_set_01": {"strong": ["tea_set_01", "tea_set", "teapot"], "weak": ["cup", "tea"]},
     "throw_pillows_01": {"strong": ["throw_pillows_01", "throw_pillows", "pillows"], "weak": ["pillow"]},
-    "wine_bottles_01": {"strong": ["wine_bottles_01", "wine_bottles"], "weak": ["bottles", "bottle"]},
+    "wine_bottles_01": {"strong": ["wine_bottles_01", "wine_bottles"], "weak": ["wine", "bottles", "bottle"]},
     "wooden_table_02": {"strong": ["wooden_table_02", "wooden_table", "table"], "weak": []},
 }
 

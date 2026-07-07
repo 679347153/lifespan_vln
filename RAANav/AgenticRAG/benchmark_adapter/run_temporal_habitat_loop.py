@@ -322,6 +322,10 @@ def _rank_with_remote_clip(
     *,
     max_candidates: int,
     clip_min_score: float,
+    remote_clip_include_weak_aliases: bool = False,
+    remote_clip_none_min_score: float = 0.25,
+    remote_clip_none_score_cap: float = 0.30,
+    remote_clip_weak_min_score: float = 0.25,
 ) -> List[CandidateScore]:
     params = FusionParams()
     candidates = rank_candidates(
@@ -340,7 +344,10 @@ def _rank_with_remote_clip(
     if query.language_prompt:
         text = query.language_prompt
     else:
-        text = " . ".join(alias.replace("_", " ") for alias in (query.alias_labels or [query.query_label])[:6])
+        text_aliases = list(query.strong_alias_labels or [query.query_label])
+        if remote_clip_include_weak_aliases:
+            text_aliases.extend(query.weak_alias_labels or [])
+        text = " . ".join(alias.replace("_", " ") for alias in text_aliases[:6])
     sims = loop.detector.clip_text_image_similarity(
         text,
         [obj.clip_embedding for obj in objects],
@@ -357,10 +364,25 @@ def _rank_with_remote_clip(
         if obj is None or not obj.pos_2d:
             continue
         match_strength = query_label_match_strength(obj.label, query)
-        score = min(raw_score, WEAK_ALIAS_SIMILARITY_CAP) if match_strength == "weak" else raw_score
+        if match_strength == "weak" and raw_score < float(remote_clip_weak_min_score):
+            continue
+        if match_strength == "none" and raw_score < float(remote_clip_none_min_score):
+            continue
+        if match_strength == "weak":
+            score = min(raw_score, WEAK_ALIAS_SIMILARITY_CAP)
+        elif match_strength == "none":
+            score = min(raw_score, float(remote_clip_none_score_cap))
+        else:
+            score = raw_score
         score_note = f"remote_clip={raw_score:.4f}"
         if match_strength == "weak" and score != raw_score:
             score_note += f",weak_alias_cap={score:.4f}"
+        if match_strength == "none" and score != raw_score:
+            score_note += f",none_alias_cap={score:.4f}"
+        if match_strength == "none":
+            score_note += f",none_alias_min={float(remote_clip_none_min_score):.4f}"
+        if match_strength == "weak":
+            score_note += f",weak_alias_min={float(remote_clip_weak_min_score):.4f}"
         if obj_id in by_id:
             cand = by_id[obj_id]
             cand.R_sim = round(max(float(cand.R_sim), score), 6)
@@ -481,6 +503,10 @@ def run_episode_temporal(
                 loop,
                 max_candidates=args.max_candidates,
                 clip_min_score=args.clip_min_score,
+                remote_clip_include_weak_aliases=bool(args.remote_clip_include_weak_aliases),
+                remote_clip_none_min_score=float(args.remote_clip_none_min_score),
+                remote_clip_none_score_cap=float(args.remote_clip_none_score_cap),
+                remote_clip_weak_min_score=float(args.remote_clip_weak_min_score),
             )
             last_candidates = _annotate_candidate_debug(candidates_to_dict(candidates), query, subtask)
             if candidates:
@@ -852,6 +878,14 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             {
                 "normalize_target_names": bool(args.normalize_target_names),
                 "target_name_map": args.target_name_map_data,
+                "remote_clip_retrieval": {
+                    "clip_min_score": float(args.clip_min_score),
+                    "include_weak_aliases": bool(args.remote_clip_include_weak_aliases),
+                    "none_min_score": float(args.remote_clip_none_min_score),
+                    "none_score_cap": float(args.remote_clip_none_score_cap),
+                    "weak_min_score": float(args.remote_clip_weak_min_score),
+                    "weak_score_cap": WEAK_ALIAS_SIMILARITY_CAP,
+                },
             },
         )
         if loop is not None:
@@ -923,6 +957,33 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-depth", type=float, default=5.0)
     parser.add_argument("--step-size", type=float, default=0.5)
     parser.add_argument("--clip-min-score", type=float, default=0.2)
+    parser.add_argument(
+        "--remote-clip-include-weak-aliases",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Include weak target aliases in the remote CLIP text query. "
+            "Disabled by default to avoid broad words such as cup/bottle/stool dominating retrieval."
+        ),
+    )
+    parser.add_argument(
+        "--remote-clip-none-min-score",
+        type=float,
+        default=0.25,
+        help="Minimum remote CLIP score required for candidates whose label has no strong/weak alias match.",
+    )
+    parser.add_argument(
+        "--remote-clip-none-score-cap",
+        type=float,
+        default=0.30,
+        help="Maximum S_final contribution allowed for remote CLIP candidates with no alias match.",
+    )
+    parser.add_argument(
+        "--remote-clip-weak-min-score",
+        type=float,
+        default=0.25,
+        help="Minimum remote CLIP score required for candidates whose label only matches a weak alias.",
+    )
     parser.add_argument(
         "--export-scene-geometry",
         action=argparse.BooleanOptionalAction,
