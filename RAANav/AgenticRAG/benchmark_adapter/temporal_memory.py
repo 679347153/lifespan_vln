@@ -47,6 +47,94 @@ def _clip_cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb)
 
 
+def _position_confidence(det: Dict[str, Any]) -> float:
+    try:
+        return max(0.0, min(1.0, float(det.get("position_confidence", 0.5))))
+    except Exception:
+        return 0.5
+
+
+def _weighted_pos2d(detections: List[Dict[str, Any]]) -> Optional[List[float]]:
+    weighted: List[Tuple[float, List[float]]] = []
+    for det in detections:
+        pos = _pos2d_from_detection(det)
+        if pos is None:
+            continue
+        weighted.append((_position_confidence(det) + 1e-3, pos))
+    if not weighted:
+        return None
+    total = sum(w for w, _ in weighted)
+    return [
+        sum(w * float(pos[0]) for w, pos in weighted) / total,
+        sum(w * float(pos[1]) for w, pos in weighted) / total,
+    ]
+
+
+def _best_conf_detection(detections: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return max(detections, key=lambda det: (_position_confidence(det), float(det.get("score", 0.0) or 0.0)))
+
+
+def _consolidate_detection_group(group: List[Dict[str, Any]]) -> Dict[str, Any]:
+    best = dict(_best_conf_detection(group))
+    pos2d = _weighted_pos2d(group)
+    if pos2d is not None:
+        best["pos_2d"] = [float(pos2d[0]), float(pos2d[1])]
+        old_pos3 = best.get("pos_3d") if isinstance(best.get("pos_3d"), list) else None
+        best["pos_3d"] = [float(pos2d[0]), float(old_pos3[1]) if old_pos3 and len(old_pos3) >= 2 else 0.0, float(pos2d[1])]
+    best["consolidated_detection_count"] = len(group)
+    best["position_confidence"] = round(max(_position_confidence(det) for det in group), 6)
+    best["raw_positions_2d"] = [
+        [round(float(pos[0]), 4), round(float(pos[1]), 4)]
+        for pos in (_pos2d_from_detection(det) for det in group)
+        if pos is not None
+    ][:20]
+    best["consolidation_sources"] = [
+        {
+            "view_index": det.get("_view_index"),
+            "position_source": det.get("position_source"),
+            "position_confidence": det.get("position_confidence"),
+            "depth_median": det.get("depth_median"),
+        }
+        for det in group[:20]
+    ]
+    return best
+
+
+def consolidate_detections(
+    detections: Iterable[Dict[str, Any]],
+    *,
+    distance_threshold: float = 0.6,
+    clip_threshold: float = 0.90,
+    clip_distance_limit: float = 1.5,
+) -> List[Dict[str, Any]]:
+    groups: List[List[Dict[str, Any]]] = []
+    for det in detections:
+        label = sanitize_detection_label(det.get("label"))
+        if is_noise_detection_label(label):
+            continue
+        pos = _pos2d_from_detection(det)
+        if pos is None:
+            continue
+        emb = det.get("clip_embedding") if isinstance(det.get("clip_embedding"), list) else []
+        placed = False
+        for group in groups:
+            head = group[0]
+            if sanitize_detection_label(head.get("label")) != label:
+                continue
+            head_pos = _pos2d_from_detection(head)
+            head_emb = head.get("clip_embedding") if isinstance(head.get("clip_embedding"), list) else []
+            dist = euclidean_2d(pos, head_pos) if head_pos is not None else float("inf")
+            dist_ok = dist <= distance_threshold
+            clip_ok = bool(emb and head_emb and dist <= clip_distance_limit and _clip_cosine(emb, head_emb) >= clip_threshold)
+            if dist_ok or clip_ok:
+                group.append(det)
+                placed = True
+                break
+        if not placed:
+            groups.append([det])
+    return [_consolidate_detection_group(group) for group in groups]
+
+
 @dataclass
 class MemoryEvent:
     event: str
@@ -178,10 +266,18 @@ class SceneMemory:
         return [Floor(floor_id="F0", rooms=room_objs, description=f"scene_memory={self.scene_name}")]
 
     def to_dict(self) -> Dict[str, Any]:
+        tracks: List[Dict[str, Any]] = []
+        for obj in sorted(self._objects.values(), key=lambda item: item.obj_id):
+            item = obj.to_dict()
+            stats = obj.cooccur_stats if isinstance(obj.cooccur_stats, dict) else {}
+            for key in ("position_history", "position_confidence", "smoothed_pos_2d"):
+                if key in stats:
+                    item[key] = stats[key]
+            tracks.append(item)
         return {
             "scene_name": self.scene_name,
             "track_count": len(self._objects),
-            "tracks": [obj.to_dict() for obj in sorted(self._objects.values(), key=lambda item: item.obj_id)],
+            "tracks": tracks,
             "rooms": {
                 room_id: room.to_dict()
                 for room_id, room in sorted(self.rooms.items(), key=lambda kv: kv[0])
@@ -298,6 +394,58 @@ class SceneMemory:
                 best, best_dist, best_clip = obj, dist, clip_score
         return best, best_dist, best_clip
 
+    def _init_position_stats(self, obj: Object, det: Dict[str, Any], pos2d: List[float]) -> None:
+        confidence = _position_confidence(det)
+        stats = obj.cooccur_stats if isinstance(obj.cooccur_stats, dict) else {}
+        stats["raw_pos_2d"] = [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)]
+        stats["smoothed_pos_2d"] = [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)]
+        stats["position_confidence"] = round(float(confidence), 6)
+        stats["position_source"] = det.get("position_source")
+        stats["position_history"] = [
+            {
+                "pos_2d": [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)],
+                "confidence": round(float(confidence), 6),
+                "source": det.get("position_source"),
+                "consolidated_detection_count": int(det.get("consolidated_detection_count", 1) or 1),
+            }
+        ]
+        stats["position_confidence_history"] = [round(float(confidence), 6)]
+        obj.cooccur_stats = stats
+
+    def _update_position_stats(self, obj: Object, det: Dict[str, Any], pos2d: List[float]) -> List[float]:
+        confidence = _position_confidence(det)
+        stats = obj.cooccur_stats if isinstance(obj.cooccur_stats, dict) else {}
+        old = stats.get("smoothed_pos_2d") if isinstance(stats.get("smoothed_pos_2d"), list) else obj.pos_2d
+        if isinstance(old, list) and len(old) >= 2:
+            old_pos = [float(old[0]), float(old[1])]
+        else:
+            old_pos = [float(pos2d[0]), float(pos2d[1])]
+        alpha = 0.25 + 0.45 * confidence
+        smoothed = [
+            old_pos[0] * (1.0 - alpha) + float(pos2d[0]) * alpha,
+            old_pos[1] * (1.0 - alpha) + float(pos2d[1]) * alpha,
+        ]
+        history = list(stats.get("position_history", []))
+        history.append(
+            {
+                "pos_2d": [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)],
+                "smoothed_pos_2d": [round(float(smoothed[0]), 4), round(float(smoothed[1]), 4)],
+                "confidence": round(float(confidence), 6),
+                "source": det.get("position_source"),
+                "consolidated_detection_count": int(det.get("consolidated_detection_count", 1) or 1),
+            }
+        )
+        conf_history = list(stats.get("position_confidence_history", []))
+        conf_history.append(round(float(confidence), 6))
+        stats["raw_pos_2d"] = [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)]
+        stats["smoothed_pos_2d"] = [round(float(smoothed[0]), 4), round(float(smoothed[1]), 4)]
+        stats["position_confidence"] = round(float(confidence), 6)
+        stats["position_source"] = det.get("position_source")
+        stats["position_history"] = history[-100:]
+        stats["position_confidence_history"] = conf_history[-100:]
+        obj.cooccur_stats = stats
+        return smoothed
+
     def update_from_detections(
         self,
         detections: Iterable[Dict[str, Any]],
@@ -308,7 +456,8 @@ class SceneMemory:
         room_id: str = "unknown",
     ) -> List[MemoryEvent]:
         events: List[MemoryEvent] = []
-        for det in detections:
+        batch_seen_track_ids: set[str] = set()
+        for det in consolidate_detections(detections):
             label = sanitize_detection_label(det.get("label"))
             if is_noise_detection_label(label):
                 continue
@@ -345,6 +494,7 @@ class SceneMemory:
                         "scene_name": self.scene_name,
                         "first_seen_state_index": int(state_index),
                         "last_seen_state_index": int(state_index),
+                        "last_seen_layout_id": layout_id,
                         "seen_count": 1,
                         "miss_count": 0,
                         "source_observations": [
@@ -357,6 +507,7 @@ class SceneMemory:
                     bbox_3d={"source_bbox_xyxy": bbox} if bbox is not None else None,
                 )
                 self._objects[track_id] = obj
+                self._init_position_stats(obj, det, pos2d)
                 details = self._update_room_memory(
                     obj,
                     room_id=observed_room_id,
@@ -367,16 +518,38 @@ class SceneMemory:
                     event_type="new",
                     now=now,
                 )
+                details.update(
+                    {
+                        "position_confidence": _position_confidence(det),
+                        "position_source": det.get("position_source"),
+                        "raw_pos_2d": [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)],
+                        "smoothed_pos_2d": obj.cooccur_stats.get("smoothed_pos_2d"),
+                        "consolidated_detection_count": int(det.get("consolidated_detection_count", 1) or 1),
+                        "merge_reason": "new_track",
+                    }
+                )
                 events.append(MemoryEvent("new", track_id, label, state_index, layout_id, step, details))
+                batch_seen_track_ids.add(track_id)
                 continue
 
             event_type = "merged"
-            if dist > self.merge_distance and (
+            pos_conf = _position_confidence(det)
+            adaptive_merge_distance = self.merge_distance if pos_conf >= 0.5 else 1.25
+            stats_for_match = match.cooccur_stats or {}
+            same_update_batch = (
+                match.obj_id in batch_seen_track_ids
+                or (
+                int(stats_for_match.get("last_seen_state_index", -999999) or -999999) == int(state_index)
+                and str(stats_for_match.get("last_seen_layout_id") or "") == str(layout_id)
+                and any(int(item.get("step", -1) or -1) == int(step) for item in stats_for_match.get("source_observations", []) if isinstance(item, dict))
+                )
+            )
+            if dist > adaptive_merge_distance and not same_update_batch and (
                 normalize_label(match.label) == label and dist <= self.migration_distance
                 or clip_score >= self.clip_migration_threshold
             ):
                 event_type = "migrated"
-            elif dist > self.merge_distance and clip_score < self.clip_migration_threshold:
+            elif dist > adaptive_merge_distance:
                 track_id = self._new_track_id(label)
                 obj = Object(
                     obj_id=track_id,
@@ -394,6 +567,7 @@ class SceneMemory:
                         "scene_name": self.scene_name,
                         "first_seen_state_index": int(state_index),
                         "last_seen_state_index": int(state_index),
+                        "last_seen_layout_id": layout_id,
                         "seen_count": 1,
                         "miss_count": 0,
                         "source_observations": [
@@ -406,6 +580,7 @@ class SceneMemory:
                     bbox_3d={"source_bbox_xyxy": bbox} if bbox is not None else None,
                 )
                 self._objects[track_id] = obj
+                self._init_position_stats(obj, det, pos2d)
                 details = self._update_room_memory(
                     obj,
                     room_id=observed_room_id,
@@ -417,6 +592,16 @@ class SceneMemory:
                     now=now,
                 )
                 details["reason"] = "same_label_far"
+                details.update(
+                    {
+                        "position_confidence": _position_confidence(det),
+                        "position_source": det.get("position_source"),
+                        "raw_pos_2d": [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)],
+                        "smoothed_pos_2d": obj.cooccur_stats.get("smoothed_pos_2d"),
+                        "consolidated_detection_count": int(det.get("consolidated_detection_count", 1) or 1),
+                        "merge_reason": "same_label_far_new_track",
+                    }
+                )
                 events.append(
                     MemoryEvent(
                         "new",
@@ -428,6 +613,7 @@ class SceneMemory:
                         details,
                     )
                 )
+                batch_seen_track_ids.add(track_id)
                 continue
 
             stats = match.cooccur_stats or {}
@@ -437,6 +623,7 @@ class SceneMemory:
                 {
                     "scene_name": self.scene_name,
                     "last_seen_state_index": int(state_index),
+                    "last_seen_layout_id": layout_id,
                     "seen_count": int(stats.get("seen_count", 0) or 0) + 1,
                     "source_observations": history[-50:],
                 }
@@ -445,9 +632,10 @@ class SceneMemory:
                 stats["first_seen_state_index"] = int(state_index)
             match.cooccur_stats = stats
             match.last_update_time = now
-            match.pos_2d = pos2d
-            match.pos_3d = pos3d
-            match.region = _region_from_pos2d(pos2d)
+            smoothed_pos2d = self._update_position_stats(match, det, pos2d)
+            match.pos_2d = smoothed_pos2d
+            match.pos_3d = [float(smoothed_pos2d[0]), float(pos3d[1]) if len(pos3d) >= 2 else 0.0, float(smoothed_pos2d[1])]
+            match.region = _region_from_pos2d(smoothed_pos2d)
             match.exist_prob = min(1.0, float(match.exist_prob or 1.0) + 0.15)
             if clip_embedding:
                 match.clip_embedding = clip_embedding
@@ -456,7 +644,7 @@ class SceneMemory:
             details = self._update_room_memory(
                 match,
                 room_id=observed_room_id,
-                pos2d=pos2d,
+                pos2d=smoothed_pos2d,
                 state_index=state_index,
                 layout_id=layout_id,
                 step=step,
@@ -464,6 +652,16 @@ class SceneMemory:
                 now=now,
             )
             details.update({"distance": None if not math.isfinite(dist) else dist, "clip_score": clip_score})
+            details.update(
+                {
+                    "position_confidence": _position_confidence(det),
+                    "position_source": det.get("position_source"),
+                    "raw_pos_2d": [round(float(pos2d[0]), 4), round(float(pos2d[1]), 4)],
+                    "smoothed_pos_2d": [round(float(smoothed_pos2d[0]), 4), round(float(smoothed_pos2d[1]), 4)],
+                    "consolidated_detection_count": int(det.get("consolidated_detection_count", 1) or 1),
+                    "merge_reason": event_type,
+                }
+            )
             events.append(
                 MemoryEvent(
                     event_type,
@@ -475,6 +673,104 @@ class SceneMemory:
                     details,
                 )
             )
+            batch_seen_track_ids.add(match.obj_id)
+        return events
+
+    def compact_duplicates(
+        self,
+        *,
+        state_index: int,
+        layout_id: str,
+        step: int,
+        distance_threshold: float = 1.0,
+        clip_threshold: float = 0.88,
+    ) -> List[MemoryEvent]:
+        events: List[MemoryEvent] = []
+        removed: set[str] = set()
+        objects = sorted(self._objects.values(), key=lambda obj: obj.obj_id)
+        for i, a in enumerate(objects):
+            if a.obj_id in removed or not a.pos_2d:
+                continue
+            for b in objects[i + 1 :]:
+                if b.obj_id in removed or not b.pos_2d:
+                    continue
+                if normalize_label(a.label) != normalize_label(b.label):
+                    continue
+                room_a = str((a.cooccur_stats or {}).get("current_room_id") or a.room_id or "")
+                room_b = str((b.cooccur_stats or {}).get("current_room_id") or b.room_id or "")
+                if room_a != room_b:
+                    continue
+                dist = euclidean_2d(a.pos_2d, b.pos_2d)
+                clip_score = _clip_cosine(a.clip_embedding, b.clip_embedding)
+                if dist > distance_threshold or clip_score < clip_threshold:
+                    continue
+
+                stats_a = a.cooccur_stats or {}
+                stats_b = b.cooccur_stats or {}
+                seen_a = int(stats_a.get("seen_count", 0) or 0)
+                seen_b = int(stats_b.get("seen_count", 0) or 0)
+                conf_a = float(stats_a.get("position_confidence", 0.5) or 0.5)
+                conf_b = float(stats_b.get("position_confidence", 0.5) or 0.5)
+                keep, drop = (a, b) if (seen_a, conf_a, a.obj_id) >= (seen_b, conf_b, b.obj_id) else (b, a)
+                keep_stats = keep.cooccur_stats or {}
+                drop_stats = drop.cooccur_stats or {}
+                keep_stats["seen_count"] = int(keep_stats.get("seen_count", 0) or 0) + int(drop_stats.get("seen_count", 0) or 0)
+                keep_stats["miss_count"] = int(keep_stats.get("miss_count", 0) or 0) + int(drop_stats.get("miss_count", 0) or 0)
+                keep_stats["negative_feedback_count"] = int(keep_stats.get("negative_feedback_count", 0) or 0) + int(
+                    drop_stats.get("negative_feedback_count", 0) or 0
+                )
+                keep_stats["position_history"] = (list(keep_stats.get("position_history", [])) + list(drop_stats.get("position_history", [])))[-100:]
+                keep_stats["position_confidence_history"] = (
+                    list(keep_stats.get("position_confidence_history", []))
+                    + list(drop_stats.get("position_confidence_history", []))
+                )[-100:]
+                keep_stats["duplicate_compaction"] = {
+                    "merged_track_id": drop.obj_id,
+                    "distance": round(float(dist), 6),
+                    "clip_score": round(float(clip_score), 6),
+                    "layout_id": layout_id,
+                    "state_index": int(state_index),
+                    "step": int(step),
+                }
+                keep.cooccur_stats = keep_stats
+                keep.exist_prob = max(float(keep.exist_prob or 0.0), float(drop.exist_prob or 0.0))
+                if not keep.clip_embedding and drop.clip_embedding:
+                    keep.clip_embedding = drop.clip_embedding
+
+                for room in self.rooms.values():
+                    if drop.obj_id not in room.object_refs:
+                        continue
+                    drop_ref = room.object_refs.pop(drop.obj_id)
+                    keep_ref = room.object_refs.get(keep.obj_id)
+                    if keep_ref is None:
+                        drop_ref.obj_id = keep.obj_id
+                        room.object_refs[keep.obj_id] = drop_ref
+                    else:
+                        keep_ref.seen_count += drop_ref.seen_count
+                        keep_ref.negative_count += drop_ref.negative_count
+                        keep_ref.positions_2d = (keep_ref.positions_2d + drop_ref.positions_2d)[-50:]
+                        keep_ref.room_exist_prob = max(keep_ref.room_exist_prob, drop_ref.room_exist_prob)
+
+                removed.add(drop.obj_id)
+                self._objects.pop(drop.obj_id, None)
+                events.append(
+                    MemoryEvent(
+                        "duplicate_compaction",
+                        keep.obj_id,
+                        keep.label,
+                        state_index,
+                        layout_id,
+                        step,
+                        {
+                            "merged_track_id": drop.obj_id,
+                            "room_id": room_a or None,
+                            "distance": round(float(dist), 6),
+                            "clip_score": round(float(clip_score), 6),
+                            "duplicate_compaction": True,
+                        },
+                    )
+                )
+                break
         return events
 
     def record_negative_feedback(

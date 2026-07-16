@@ -248,15 +248,37 @@ class HabitatVisionLoop:
         agent_pos: np.ndarray,
         heading_deg: float,
     ) -> None:
+        min_depth_valid_ratio = 0.05
+        max_depth_iqr = 1.0
+        max_world_samples = 600
         bbox = det.get("bbox_xyxy") or [0, 0, 0, 0]
+        x0 = min(max(int(float(bbox[0])), 0), depth.shape[1] - 1)
+        y0 = min(max(int(float(bbox[1])), 0), depth.shape[0] - 1)
+        x1 = min(max(int(float(bbox[2])), x0 + 1), depth.shape[1])
+        y1 = min(max(int(float(bbox[3])), y0 + 1), depth.shape[0])
         mask = det.get("mask")
-        valid_depths = np.asarray([], dtype=np.float32)
+        valid_pixels: Optional[np.ndarray] = None
+        position_source = "invalid"
+        valid_ratio = 0.0
+        depth_iqr: Optional[float] = None
         if isinstance(mask, np.ndarray) and mask.shape[:2] == depth.shape[:2]:
-            mask_depths = depth[mask.astype(bool)]
-            valid_depths = mask_depths[(mask_depths > 0) & (mask_depths < self.max_depth)]
-        if len(valid_depths) == 0:
-            cx = int((float(bbox[0]) + float(bbox[2])) / 2.0)
-            cy = int((float(bbox[1]) + float(bbox[3])) / 2.0)
+            mask_bool = mask.astype(bool)
+            mask_count = int(mask_bool.sum())
+            valid_mask = mask_bool & (depth > 0) & (depth < self.max_depth)
+            valid_count = int(valid_mask.sum())
+            valid_ratio = float(valid_count / max(1, mask_count))
+            valid_depths = depth[valid_mask].astype(np.float32)
+            if len(valid_depths):
+                q25, q75 = np.percentile(valid_depths, [25, 75])
+                depth_iqr = float(q75 - q25)
+            if len(valid_depths) and valid_ratio >= min_depth_valid_ratio and (depth_iqr is None or depth_iqr <= max_depth_iqr):
+                ys, xs = np.where(valid_mask)
+                valid_pixels = np.stack([xs, ys, valid_depths], axis=1).astype(np.float32)
+                position_source = "mask_depth_points"
+
+        if valid_pixels is None:
+            cx = int((x0 + x1) / 2.0)
+            cy = int((y0 + y1) / 2.0)
             cx = min(max(cx, 0), depth.shape[1] - 1)
             cy = min(max(cy, 0), depth.shape[0] - 1)
             d = float(depth[cy, cx])
@@ -264,24 +286,43 @@ class HabitatVisionLoop:
                 det["pos_3d"] = None
                 det["pos_2d"] = None
                 det["depth_median"] = None
+                det["position_confidence"] = 0.0
+                det["position_source"] = "invalid_depth"
+                det["depth_valid_ratio"] = round(float(valid_ratio), 6)
+                det["depth_iqr"] = round(float(depth_iqr), 6) if depth_iqr is not None else None
+                det["world_position_sample_count"] = 0
                 return
-            valid_depths = np.asarray([d], dtype=np.float32)
-        median_d = float(np.median(valid_depths))
-        if isinstance(mask, np.ndarray) and np.any(mask):
-            ys, xs = np.where(mask.astype(bool))
-            u = float(np.mean(xs))
-            v = float(np.mean(ys))
+            valid_pixels = np.asarray([[float(cx), float(cy), d]], dtype=np.float32)
+            position_source = "bbox_center_depth"
+            valid_ratio = 1.0 / max(1, (x1 - x0) * (y1 - y0))
+
+        if len(valid_pixels) > max_world_samples:
+            sample_idx = np.linspace(0, len(valid_pixels) - 1, max_world_samples).astype(np.int64)
+            valid_pixels = valid_pixels[sample_idx]
+
+        us = valid_pixels[:, 0]
+        vs = valid_pixels[:, 1]
+        ds = valid_pixels[:, 2]
+        cam_x = (us - self.intrinsics.cx) * ds / self.intrinsics.fx
+        cam_y = (vs - self.intrinsics.cy) * ds / self.intrinsics.fy
+        cam_z = ds
+        world = _camera_to_world(np.stack([cam_x, cam_y, cam_z], axis=1).astype(np.float32), agent_pos, heading_deg)
+        median_world = np.median(world, axis=0)
+        wx, wy, wz = float(median_world[0]), float(median_world[1]), float(median_world[2])
+        median_d = float(np.median(ds))
+        if position_source == "mask_depth_points":
+            iqr_factor = 1.0 if depth_iqr is None else max(0.25, 1.0 - min(depth_iqr, max_depth_iqr) / max_depth_iqr)
+            confidence = max(0.05, min(1.0, 0.35 + 1.8 * valid_ratio)) * iqr_factor
         else:
-            u = float((float(bbox[0]) + float(bbox[2])) / 2.0)
-            v = float((float(bbox[1]) + float(bbox[3])) / 2.0)
-        cam_x = (u - self.intrinsics.cx) * median_d / self.intrinsics.fx
-        cam_y = (v - self.intrinsics.cy) * median_d / self.intrinsics.fy
-        cam_z = median_d
-        world = _camera_to_world(np.asarray([[cam_x, cam_y, cam_z]], dtype=np.float32), agent_pos, heading_deg)
-        wx, wy, wz = float(world[0, 0]), float(world[0, 1]), float(world[0, 2])
+            confidence = 0.35
         det["pos_3d"] = [wx, wy, wz]
         det["pos_2d"] = [wx, wz]
         det["depth_median"] = median_d
+        det["position_confidence"] = round(float(confidence), 6)
+        det["position_source"] = position_source
+        det["depth_valid_ratio"] = round(float(valid_ratio), 6)
+        det["depth_iqr"] = round(float(depth_iqr), 6) if depth_iqr is not None else None
+        det["world_position_sample_count"] = int(len(valid_pixels))
 
     def step_to(self, candidate_pose: Pose, *, max_micro_steps: int) -> StepResult:
         if self.adapter is None or self.current_pose is None:

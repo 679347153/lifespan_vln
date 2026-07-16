@@ -297,6 +297,213 @@ def _pose_from_candidate(candidate: CandidateScore, current_pose: Pose) -> Pose:
     return Pose(float(candidate.world_x), float(current_pose.y), float(candidate.world_z), float(current_pose.yaw))
 
 
+def _path_distance(loop: HabitatVisionLoop, start: Pose, goal: Pose) -> float:
+    if loop.adapter is None:
+        return euclidean_2d([start.x, start.z], [goal.x, goal.z])
+    try:
+        snapped = loop.adapter.snap_pose(goal)
+        points = loop.adapter.shortest_path_points(start, snapped)
+    except Exception:
+        return euclidean_2d([start.x, start.z], [goal.x, goal.z])
+    if not points:
+        return euclidean_2d([start.x, start.z], [goal.x, goal.z])
+    dist = 0.0
+    last = start
+    for point in points:
+        dist += math.sqrt((float(point.x) - float(last.x)) ** 2 + (float(point.z) - float(last.z)) ** 2)
+        last = point
+    return float(dist)
+
+
+def _candidate_room_id(candidate: CandidateScore, memory: SceneMemory) -> str:
+    obj = {item.obj_id: item for item in memory.objects()}.get(candidate.obj_id)
+    if obj is None:
+        return "unknown"
+    stats = obj.cooccur_stats or {}
+    return str(stats.get("current_room_id") or obj.room_id or "unknown")
+
+
+def _candidate_room_belief(candidate: CandidateScore, memory: SceneMemory, room_id: str) -> float:
+    obj = {item.obj_id: item for item in memory.objects()}.get(candidate.obj_id)
+    if obj is None:
+        return 0.0
+    belief = (obj.cooccur_stats or {}).get("room_belief")
+    if not isinstance(belief, dict):
+        return 0.0
+    try:
+        return max(0.0, min(1.0, float(belief.get(room_id, 0.0))))
+    except Exception:
+        return 0.0
+
+
+def _room_representative_pose(candidates: List[CandidateScore], current_pose: Pose) -> Pose:
+    if not candidates:
+        return current_pose
+    weights = [max(0.001, float(c.S_final)) for c in candidates]
+    total = sum(weights)
+    x = sum(w * float(c.world_x) for w, c in zip(weights, candidates)) / total
+    z = sum(w * float(c.world_z) for w, c in zip(weights, candidates)) / total
+    return Pose(float(x), float(current_pose.y), float(z), float(current_pose.yaw))
+
+
+def _approach_pose_for_candidate(
+    loop: HabitatVisionLoop,
+    candidate: CandidateScore,
+    current_pose: Pose,
+    *,
+    recent_poses: List[Pose],
+) -> Tuple[Pose, Dict[str, Any]]:
+    center_x, center_z = float(candidate.world_x), float(candidate.world_z)
+    if loop.adapter is None:
+        pose = Pose(center_x, float(current_pose.y), center_z, float(current_pose.yaw))
+        return pose, {"source": "object_center_no_adapter"}
+    best_pose: Optional[Pose] = None
+    best_score = float("inf")
+    best_terms: Dict[str, Any] = {}
+    radii = [0.8, 1.1, 1.5]
+    angles = [i * (math.pi / 4.0) for i in range(8)]
+    for radius in radii:
+        for angle in angles:
+            raw = Pose(
+                center_x + radius * math.cos(angle),
+                float(current_pose.y),
+                center_z + radius * math.sin(angle),
+                math.degrees(math.atan2(center_x - (center_x + radius * math.cos(angle)), center_z - (center_z + radius * math.sin(angle)))),
+            )
+            try:
+                snapped = loop.adapter.snap_pose(raw)
+            except Exception:
+                continue
+            path_dist = _path_distance(loop, current_pose, snapped)
+            object_dist = euclidean_2d([snapped.x, snapped.z], [center_x, center_z])
+            revisit = 0.0
+            for prev in recent_poses[-6:]:
+                d = euclidean_2d([snapped.x, snapped.z], [prev.x, prev.z])
+                if d < 1.0:
+                    revisit += 1.0 - d
+            score = path_dist + 0.5 * abs(object_dist - 1.1) + 0.75 * revisit
+            if score < best_score:
+                best_pose = snapped
+                best_score = score
+                best_terms = {
+                    "source": "object_approach_pose",
+                    "object_distance": round(float(object_dist), 6),
+                    "geodesic_distance": round(float(path_dist), 6),
+                    "revisit_penalty": round(float(revisit), 6),
+                }
+    if best_pose is None:
+        pose = loop.adapter.snap_pose(Pose(center_x, float(current_pose.y), center_z, float(current_pose.yaw)))
+        return pose, {"source": "object_center_snap_fallback"}
+    return best_pose, best_terms
+
+
+def _select_room_level_goal(
+    candidates: List[CandidateScore],
+    memory: SceneMemory,
+    loop: HabitatVisionLoop,
+    current_pose: Pose,
+    args: argparse.Namespace,
+    *,
+    previous_room_id: Optional[str],
+    room_commit_remaining: int,
+    recent_rooms: List[str],
+    recent_poses: List[Pose],
+    failed_rooms: Dict[str, int],
+    query: QuerySpec,
+) -> Tuple[Optional[CandidateScore], Optional[Pose], Dict[str, Any], int]:
+    if not candidates:
+        return None, None, {"selected_pose_source": "no_candidate"}, 0
+    room_groups: Dict[str, List[CandidateScore]] = defaultdict(list)
+    for cand in candidates:
+        room_groups[_candidate_room_id(cand, memory)].append(cand)
+    room_rows: List[Dict[str, Any]] = []
+    raw_distances: Dict[str, float] = {}
+    for room_id, items in room_groups.items():
+        top_items = sorted(items, key=lambda c: -float(c.S_final))[: max(1, int(args.room_top_k_objects))]
+        rep_pose = _room_representative_pose(top_items, current_pose)
+        raw_distances[room_id] = _path_distance(loop, current_pose, rep_pose)
+    max_dist = max(raw_distances.values(), default=1.0) or 1.0
+    for room_id, items in room_groups.items():
+        ranked = sorted(items, key=lambda c: -float(c.S_final))
+        top_items = ranked[: max(1, int(args.room_top_k_objects))]
+        object_scores = [float(c.S_final) for c in top_items]
+        max_object_score = max(object_scores) if object_scores else 0.0
+        mean_top3 = sum(object_scores[:3]) / max(1, len(object_scores[:3]))
+        target_room_belief = max((_candidate_room_belief(c, memory, room_id) for c in top_items), default=0.0)
+        exploration_gain = 1.0 / math.sqrt(1.0 + len(memory.rooms.get(room_id).object_refs if room_id in memory.rooms else []))
+        normalized_dist = raw_distances.get(room_id, max_dist) / max_dist
+        room_revisit_penalty = sum(1.0 for rid in recent_rooms[-int(args.room_revisit_window) :] if rid == room_id) / max(
+            1, int(args.room_revisit_window)
+        )
+        room_revisit_penalty += float(failed_rooms.get(room_id, 0)) * float(args.room_negative_penalty_weight)
+        room_switch_penalty = 1.0 if previous_room_id and room_id != previous_room_id and room_commit_remaining > 0 else 0.0
+        score = (
+            0.45 * max_object_score
+            + 0.20 * mean_top3
+            + 0.15 * target_room_belief
+            + 0.10 * exploration_gain
+            - float(args.room_distance_weight) * normalized_dist
+            - 0.20 * room_revisit_penalty
+            - 0.15 * room_switch_penalty
+        )
+        room_rows.append(
+            {
+                "room_id": room_id,
+                "score": round(float(score), 6),
+                "terms": {
+                    "max_object_score": round(float(max_object_score), 6),
+                    "mean_top3_object_score": round(float(mean_top3), 6),
+                    "target_room_belief": round(float(target_room_belief), 6),
+                    "exploration_gain": round(float(exploration_gain), 6),
+                    "normalized_geodesic_distance": round(float(normalized_dist), 6),
+                    "room_revisit_penalty": round(float(room_revisit_penalty), 6),
+                    "room_switch_penalty": round(float(room_switch_penalty), 6),
+                },
+                "top_object_ids": [c.obj_id for c in top_items],
+                "top_labels": [c.label for c in top_items],
+            }
+        )
+    room_rows.sort(key=lambda item: (-float(item["score"]), str(item["room_id"])))
+    selected_room = room_rows[0]
+    switch_reason = "best_room"
+    if previous_room_id and room_commit_remaining > 0:
+        previous = next((row for row in room_rows if row["room_id"] == previous_room_id), None)
+        if previous is not None and float(selected_room["score"]) <= float(previous["score"]) + float(args.room_switch_margin):
+            selected_room = previous
+            switch_reason = "commit_previous_room"
+    selected_room_id = str(selected_room["room_id"])
+    room_candidates = sorted(room_groups[selected_room_id], key=lambda c: -float(c.S_final))
+    selected_candidate = next((c for c in room_candidates if query_label_match_strength(c.label, query) == "strong"), None)
+    selected_pose_source = "object_approach_pose"
+    approach_details: Dict[str, Any] = {}
+    if selected_candidate is None:
+        selected_candidate = room_candidates[0] if room_candidates else None
+        representative = _room_representative_pose(room_candidates[: max(1, int(args.room_top_k_objects))], current_pose)
+        selected_pose_source = "room_representative_pose"
+        try:
+            target_pose = loop.adapter.snap_pose(representative) if loop.adapter is not None else representative
+        except Exception:
+            target_pose = representative
+    else:
+        target_pose, approach_details = _approach_pose_for_candidate(loop, selected_candidate, current_pose, recent_poses=recent_poses)
+        selected_pose_source = str(approach_details.get("source") or "object_approach_pose")
+    if selected_candidate is None:
+        return None, None, {"selected_pose_source": "empty_selected_room", "room_scores_top": room_rows[:5]}, 0
+    next_commit = max(0, int(args.room_commit_rounds) - 1) if switch_reason == "best_room" else max(0, room_commit_remaining - 1)
+    planning_info = {
+        "planning_mode": "room",
+        "selected_room_id": selected_room_id,
+        "room_scores_top": room_rows[:5],
+        "room_score_terms": selected_room.get("terms", {}),
+        "selected_pose_source": selected_pose_source,
+        "approach_pose": to_json_dict(target_pose),
+        "approach_terms": approach_details,
+        "room_switch_reason": switch_reason,
+        "revisit_penalty": selected_room.get("terms", {}).get("room_revisit_penalty"),
+    }
+    return selected_candidate, target_pose, planning_info, next_commit
+
+
 def _fallback_pose(loop: HabitatVisionLoop, episode: Episode, subtask: Subtask, round_idx: int) -> Pose:
     if loop.adapter is None or loop.adapter.sim is None:
         rng = random.Random(episode.seed + round_idx)
@@ -461,6 +668,11 @@ def run_episode_temporal(
         last_candidates: List[Dict[str, Any]] = []
         final_pose = current_pose
         target_detection_summary: Dict[str, Any] = {}
+        previous_room_id: Optional[str] = None
+        room_commit_remaining = 0
+        recent_rooms: List[str] = []
+        recent_poses: List[Pose] = []
+        failed_rooms: Dict[str, int] = defaultdict(int)
 
         for round_idx in range(max(1, int(args.max_rounds))):
             if subtask_steps >= int(args.max_steps_per_subtask):
@@ -509,13 +721,39 @@ def run_episode_temporal(
                 remote_clip_weak_min_score=float(args.remote_clip_weak_min_score),
             )
             last_candidates = _annotate_candidate_debug(candidates_to_dict(candidates), query, subtask)
+            selected_candidate: Optional[CandidateScore] = None
+            planning_info: Dict[str, Any] = {"planning_mode": args.planning_mode}
             if candidates:
-                target_pose = _pose_from_candidate(candidates[0], loop.current_pose or current_pose)
+                if args.planning_mode == "room":
+                    selected_candidate, planned_pose, planning_info, room_commit_remaining = _select_room_level_goal(
+                        candidates,
+                        memory,
+                        loop,
+                        loop.current_pose or current_pose,
+                        args,
+                        previous_room_id=previous_room_id,
+                        room_commit_remaining=room_commit_remaining,
+                        recent_rooms=recent_rooms,
+                        recent_poses=recent_poses,
+                        failed_rooms=failed_rooms,
+                        query=query,
+                    )
+                    if selected_candidate is not None and planned_pose is not None:
+                        target_pose = planned_pose
+                    else:
+                        selected_candidate = candidates[0]
+                        target_pose = _pose_from_candidate(selected_candidate, loop.current_pose or current_pose)
+                        planning_info = {"planning_mode": "room", "selected_pose_source": "object_top1_fallback"}
+                else:
+                    selected_candidate = candidates[0]
+                    target_pose = _pose_from_candidate(selected_candidate, loop.current_pose or current_pose)
+                    planning_info = {"planning_mode": "object", "selected_pose_source": "object_center"}
                 fallback_reason = None
             else:
                 target_pose = _fallback_pose(loop, episode, subtask, round_idx)
                 fallback_reason = "no_candidate"
                 fallback_count += 1
+                planning_info = {"planning_mode": args.planning_mode, "selected_pose_source": "random_navmesh_fallback"}
 
             remaining_steps = max(1, int(args.max_steps_per_subtask) - subtask_steps)
             step_result = loop.step_to(target_pose, max_micro_steps=min(int(args.micro_steps_per_round), remaining_steps))
@@ -524,6 +762,14 @@ def run_episode_temporal(
             path_length += step_result.path_length
             current_pose = step_result.final_pose
             final_pose = step_result.final_pose
+            selected_candidate_record = None
+            if selected_candidate is not None:
+                selected_candidate_record = next(
+                    (item for item in last_candidates if item.get("obj_id") == selected_candidate.obj_id),
+                    None,
+                )
+            if selected_candidate_record is None and last_candidates:
+                selected_candidate_record = last_candidates[0]
             candidate_records.append(
                 _safe_json_value(
                     {
@@ -534,8 +780,9 @@ def run_episode_temporal(
                         "state_index": episode.state_index,
                         "round": round_idx,
                         "fallback_reason": fallback_reason,
-                        "selected_candidate": last_candidates[0] if last_candidates else None,
+                        "selected_candidate": selected_candidate_record,
                         "top_candidates": last_candidates,
+                        **planning_info,
                         "target_position": [subtask.target_position.x, subtask.target_position.z],
                         "success_radius": subtask.success_radius,
                         "planned_pose": to_json_dict(target_pose),
@@ -546,6 +793,12 @@ def run_episode_temporal(
                     }
                 )
             )
+            if planning_info.get("selected_room_id"):
+                previous_room_id = str(planning_info.get("selected_room_id"))
+                recent_rooms.append(previous_room_id)
+                recent_rooms = recent_rooms[-20:]
+            recent_poses.append(target_pose)
+            recent_poses = recent_poses[-20:]
 
             text_prompt = _prompt_for_query(query, global_labels, memory, int(args.max_detect_labels))
             post_obs = loop.observe(
@@ -574,9 +827,9 @@ def run_episode_temporal(
             if post_target_diag.get("target_detection_confirmed"):
                 perception_found = True
                 break
-            if candidates:
+            if selected_candidate is not None:
                 event = memory.record_negative_feedback(
-                    candidates[0].obj_id,
+                    selected_candidate.obj_id,
                     state_index=episode.state_index,
                     layout_id=episode.layout_id,
                     step=total_steps,
@@ -586,6 +839,9 @@ def run_episode_temporal(
                     record = event.to_dict()
                     feedback_records.append(record)
                     memory_events.append(record)
+                selected_room = planning_info.get("selected_room_id")
+                if selected_room:
+                    failed_rooms[str(selected_room)] += 1
 
         final_dist = _trace_distance(final_pose, subtask)
         benchmark_success = final_dist <= float(subtask.success_radius)
@@ -834,6 +1090,12 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     args,
                     global_labels=global_labels,
                 )
+                compaction_events = memory.compact_duplicates(
+                    state_index=episode.state_index,
+                    layout_id=episode.layout_id,
+                    step=max((int(step.t) for step in trajectory.steps), default=0),
+                )
+                memory_events.extend(event.to_dict() for event in compaction_events)
                 run_f.write(json.dumps(to_json_dict(trajectory), ensure_ascii=False) + "\n")
                 for record in diagnostics:
                     all_diagnostics.append(record)
@@ -885,6 +1147,15 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     "none_score_cap": float(args.remote_clip_none_score_cap),
                     "weak_min_score": float(args.remote_clip_weak_min_score),
                     "weak_score_cap": WEAK_ALIAS_SIMILARITY_CAP,
+                },
+                "planning": {
+                    "planning_mode": args.planning_mode,
+                    "room_top_k_objects": int(args.room_top_k_objects),
+                    "room_commit_rounds": int(args.room_commit_rounds),
+                    "room_switch_margin": float(args.room_switch_margin),
+                    "room_revisit_window": int(args.room_revisit_window),
+                    "room_negative_penalty_weight": float(args.room_negative_penalty_weight),
+                    "room_distance_weight": float(args.room_distance_weight),
                 },
             },
         )
@@ -951,6 +1222,18 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-rounds", type=int, default=5)
     parser.add_argument("--max-candidates", type=int, default=10)
     parser.add_argument("--max-detect-labels", type=int, default=80)
+    parser.add_argument(
+        "--planning-mode",
+        choices=("object", "room"),
+        default="room",
+        help="Use legacy object Top-1 planning or room-first planning.",
+    )
+    parser.add_argument("--room-top-k-objects", type=int, default=5)
+    parser.add_argument("--room-commit-rounds", type=int, default=2)
+    parser.add_argument("--room-switch-margin", type=float, default=0.12)
+    parser.add_argument("--room-revisit-window", type=int, default=4)
+    parser.add_argument("--room-negative-penalty-weight", type=float, default=0.20)
+    parser.add_argument("--room-distance-weight", type=float, default=0.25)
     parser.add_argument("--n-views", type=int, default=4)
     parser.add_argument("--sensor-width", type=int, default=640)
     parser.add_argument("--sensor-height", type=int, default=480)
