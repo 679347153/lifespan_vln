@@ -692,7 +692,17 @@ def run_episode_temporal(
                 layout_id=episode.layout_id,
                 step=total_steps,
             ):
-                memory_events.append(event.to_dict())
+                event_record = event.to_dict()
+                event_record.update(
+                    {
+                        "episode_id": episode.episode_id,
+                        "subtask_id": subtask.subtask_id,
+                        "scene_name": episode.scene_name,
+                        "round": round_idx,
+                        "observation_phase": "pre_move",
+                    }
+                )
+                memory_events.append(event_record)
             obs_target_diag = _target_detection_diagnostics(
                 obs.detections,
                 query,
@@ -815,7 +825,17 @@ def run_episode_temporal(
                 layout_id=episode.layout_id,
                 step=total_steps,
             ):
-                memory_events.append(event.to_dict())
+                event_record = event.to_dict()
+                event_record.update(
+                    {
+                        "episode_id": episode.episode_id,
+                        "subtask_id": subtask.subtask_id,
+                        "scene_name": episode.scene_name,
+                        "round": round_idx,
+                        "observation_phase": "post_move",
+                    }
+                )
+                memory_events.append(event_record)
             post_target_diag = _target_detection_diagnostics(
                 post_obs.detections,
                 query,
@@ -1095,7 +1115,17 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     layout_id=episode.layout_id,
                     step=max((int(step.t) for step in trajectory.steps), default=0),
                 )
-                memory_events.extend(event.to_dict() for event in compaction_events)
+                for event in compaction_events:
+                    event_record = event.to_dict()
+                    event_record.update(
+                        {
+                            "episode_id": episode.episode_id,
+                            "scene_name": episode.scene_name,
+                            "round": None,
+                            "observation_phase": "after_episode_compaction",
+                        }
+                    )
+                    memory_events.append(event_record)
                 run_f.write(json.dumps(to_json_dict(trajectory), ensure_ascii=False) + "\n")
                 for record in diagnostics:
                     all_diagnostics.append(record)
