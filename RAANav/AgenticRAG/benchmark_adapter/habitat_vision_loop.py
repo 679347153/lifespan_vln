@@ -5,7 +5,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -125,6 +125,10 @@ class HabitatVisionLoop:
         self.perception_failures = 0
         self.perception_elapsed = 0.0
         self.detection_count = 0
+        self.frame_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+
+    def set_frame_callback(self, callback: Optional[Callable[[Dict[str, Any]], None]]) -> None:
+        self.frame_callback = callback
 
     def close(self) -> None:
         if self.adapter is not None:
@@ -174,7 +178,16 @@ class HabitatVisionLoop:
         self.current_pose = next_pose
         return next_pose
 
-    def observe(self, *, n_views: int, text_prompt: str, step: int, state_index: int, layout_id: str) -> ObservationBatch:
+    def observe(
+        self,
+        *,
+        n_views: int,
+        text_prompt: str,
+        step: int,
+        state_index: int,
+        layout_id: str,
+        frame_context: Optional[Dict[str, Any]] = None,
+    ) -> ObservationBatch:
         if self.adapter is None or self.current_pose is None:
             raise RuntimeError("HabitatVisionLoop.reset_layout must be called before observe().")
         start = time.time()
@@ -211,6 +224,7 @@ class HabitatVisionLoop:
                 self.perception_failures += 1
                 raise
             agent_pos = np.asarray([view_pose.x, view_pose.y, view_pose.z], dtype=np.float32)
+            view_records: List[Dict[str, Any]] = []
             for det in view_dets:
                 raw_label = str(det.get("label") or "").strip()
                 clean_label = sanitize_detection_label(raw_label)
@@ -237,6 +251,21 @@ class HabitatVisionLoop:
                     }
                 )
                 records.append(record)
+                view_records.append(record)
+            if self.frame_callback is not None:
+                self.frame_callback(
+                    {
+                        "kind": "observation",
+                        "rgb": rgb_np,
+                        "detections": view_records,
+                        "pose": view_pose,
+                        "view_index": view_idx,
+                        "step": int(step),
+                        "state_index": int(state_index),
+                        "layout_id": layout_id,
+                        **(frame_context or {}),
+                    }
+                )
         self.adapter.set_agent_pose(base)
         self.current_pose = base
         return ObservationBatch(detections=detections, records=records, elapsed_seconds=time.time() - start)
@@ -324,7 +353,13 @@ class HabitatVisionLoop:
         det["depth_iqr"] = round(float(depth_iqr), 6) if depth_iqr is not None else None
         det["world_position_sample_count"] = int(len(valid_pixels))
 
-    def step_to(self, candidate_pose: Pose, *, max_micro_steps: int) -> StepResult:
+    def step_to(
+        self,
+        candidate_pose: Pose,
+        *,
+        max_micro_steps: int,
+        frame_context: Optional[Dict[str, Any]] = None,
+    ) -> StepResult:
         if self.adapter is None or self.current_pose is None:
             raise RuntimeError("HabitatVisionLoop.reset_layout must be called before step_to().")
         goal = self.adapter.snap_pose(candidate_pose)
@@ -334,9 +369,28 @@ class HabitatVisionLoop:
             points = [goal]
         path_length = 0.0
         last = self.current_pose
+        path_so_far: List[Dict[str, float]] = []
         for pose in points:
             path_length += euclidean_distance(last, pose)
             self.adapter.set_agent_pose(pose)
+            path_item = {"x": pose.x, "y": pose.y, "z": pose.z, "yaw": pose.yaw}
+            path_so_far.append(path_item)
+            if self.frame_callback is not None:
+                obs = self.adapter.observe(pose)
+                rgb = obs.get("color")
+                if rgb is not None:
+                    rgb_np = np.asarray(rgb)
+                    if rgb_np.ndim == 3 and rgb_np.shape[2] >= 3:
+                        rgb_np = rgb_np[:, :, :3].copy()
+                    self.frame_callback(
+                        {
+                            "kind": "navigation",
+                            "rgb": rgb_np,
+                            "pose": pose,
+                            "path_so_far": list(path_so_far),
+                            **(frame_context or {}),
+                        }
+                    )
             last = pose
         self.current_pose = last
         return StepResult(

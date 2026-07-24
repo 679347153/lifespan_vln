@@ -39,6 +39,7 @@ from .formal_scoring import CandidateScore, FusionParams, candidates_to_dict, ra
 from .habitat_vision_loop import HabitatVisionLoop
 from .image_goal_index import ImageGoalIndex
 from .offline_eval import _aggregate_group, _safe_json_value, load_episodes_for_args
+from .search_video import SearchVideoRecorder, VideoSelector
 from .temporal_memory import SceneMemory
 
 
@@ -637,6 +638,7 @@ def run_episode_temporal(
     loop: HabitatVisionLoop,
     args: argparse.Namespace,
     *,
+    episode_index: int,
     global_labels: List[str],
 ) -> Tuple[Trajectory, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     start_time = time.time()
@@ -654,7 +656,7 @@ def run_episode_temporal(
     memory_events: List[Dict[str, Any]] = []
     feedback_records: List[Dict[str, Any]] = []
 
-    for subtask in episode.subtasks:
+    for subtask_index, subtask in enumerate(episode.subtasks):
         query = query_from_subtask(
             episode,
             subtask,
@@ -673,6 +675,54 @@ def run_episode_temporal(
         recent_rooms: List[str] = []
         recent_poses: List[Pose] = []
         failed_rooms: Dict[str, int] = defaultdict(int)
+        recorder: Optional[SearchVideoRecorder] = None
+        video_selector: Optional[VideoSelector] = getattr(args, "video_selector", None)
+        if bool(getattr(args, "record_search_video", False)) and video_selector is not None:
+            if video_selector.should_record(int(episode_index), int(subtask_index), subtask.subtask_id):
+                video_output_root = as_path(getattr(args, "video_output_dir_resolved", "") or (as_path(args.output_dir) / "videos"))
+                recorder = SearchVideoRecorder(
+                    output_dir=video_output_root / episode.episode_id / subtask.subtask_id,
+                    context={
+                        "episode_id": episode.episode_id,
+                        "episode_index": int(episode_index),
+                        "subtask_id": subtask.subtask_id,
+                        "subtask_index": int(subtask_index),
+                        "scene_name": episode.scene_name,
+                        "layout_id": episode.layout_id,
+                        "state_index": int(episode.state_index),
+                        "target_object": subtask.target_object,
+                        "query_label": query.label,
+                        "target_position": [subtask.target_position.x, subtask.target_position.z],
+                        "success_radius": subtask.success_radius,
+                    },
+                    fps=float(args.video_fps),
+                    width=int(args.video_width),
+                    height=int(args.video_height),
+                    max_candidate_k=int(args.video_max_candidate_k),
+                    include_observation_views=bool(args.video_include_observation_views),
+                )
+
+        def _video_frame_callback(payload: Dict[str, Any]) -> None:
+            if recorder is None:
+                return
+            kind = payload.get("kind")
+            if kind == "observation":
+                recorder.record_observation_frame(
+                    rgb=payload["rgb"],
+                    detections=payload.get("detections", []),
+                    pose=payload["pose"],
+                    view_index=int(payload.get("view_index", 0) or 0),
+                    phase=str(payload.get("phase") or "OBSERVE"),
+                    round_index=payload.get("round"),
+                )
+            elif kind == "navigation":
+                recorder.record_navigation_frame(
+                    rgb=payload["rgb"],
+                    pose=payload["pose"],
+                    path_so_far=payload.get("path_so_far", []),
+                )
+
+        loop.set_frame_callback(_video_frame_callback if recorder is not None else None)
 
         for round_idx in range(max(1, int(args.max_rounds))):
             if subtask_steps >= int(args.max_steps_per_subtask):
@@ -684,8 +734,15 @@ def run_episode_temporal(
                 step=total_steps,
                 state_index=episode.state_index,
                 layout_id=episode.layout_id,
+                frame_context={
+                    "episode_id": episode.episode_id,
+                    "subtask_id": subtask.subtask_id,
+                    "round": round_idx,
+                    "phase": "PRE_OBSERVE",
+                },
             )
             observation_records.extend(obs.records)
+            pre_memory_events: List[Dict[str, Any]] = []
             for event in memory.update_from_detections(
                 obs.detections,
                 state_index=episode.state_index,
@@ -703,6 +760,7 @@ def run_episode_temporal(
                     }
                 )
                 memory_events.append(event_record)
+                pre_memory_events.append(event_record)
             obs_target_diag = _target_detection_diagnostics(
                 obs.detections,
                 query,
@@ -765,13 +823,6 @@ def run_episode_temporal(
                 fallback_count += 1
                 planning_info = {"planning_mode": args.planning_mode, "selected_pose_source": "random_navmesh_fallback"}
 
-            remaining_steps = max(1, int(args.max_steps_per_subtask) - subtask_steps)
-            step_result = loop.step_to(target_pose, max_micro_steps=min(int(args.micro_steps_per_round), remaining_steps))
-            subtask_steps += step_result.steps
-            total_steps += step_result.steps
-            path_length += step_result.path_length
-            current_pose = step_result.final_pose
-            final_pose = step_result.final_pose
             selected_candidate_record = None
             if selected_candidate is not None:
                 selected_candidate_record = next(
@@ -780,29 +831,60 @@ def run_episode_temporal(
                 )
             if selected_candidate_record is None and last_candidates:
                 selected_candidate_record = last_candidates[0]
-            candidate_records.append(
-                _safe_json_value(
+            round_video_start = recorder.frame_count if recorder is not None else None
+            if recorder is not None:
+                recorder.record_planning_state(
+                    candidates=last_candidates,
+                    selected_candidate=selected_candidate_record,
+                    planned_pose=target_pose,
+                    planning_info=planning_info,
+                    memory_delta=pre_memory_events,
+                    round_index=round_idx,
+                )
+            remaining_steps = max(1, int(args.max_steps_per_subtask) - subtask_steps)
+            step_result = loop.step_to(
+                target_pose,
+                max_micro_steps=min(int(args.micro_steps_per_round), remaining_steps),
+                frame_context={
+                    "episode_id": episode.episode_id,
+                    "subtask_id": subtask.subtask_id,
+                    "round": round_idx,
+                    "phase": "MOVE",
+                },
+            )
+            subtask_steps += step_result.steps
+            total_steps += step_result.steps
+            path_length += step_result.path_length
+            current_pose = step_result.final_pose
+            final_pose = step_result.final_pose
+            candidate_record = {
+                "episode_id": episode.episode_id,
+                "subtask_id": subtask.subtask_id,
+                "scene_name": episode.scene_name,
+                "layout_id": episode.layout_id,
+                "state_index": episode.state_index,
+                "round": round_idx,
+                "fallback_reason": fallback_reason,
+                "selected_candidate": selected_candidate_record,
+                "top_candidates": last_candidates,
+                **planning_info,
+                "target_position": [subtask.target_position.x, subtask.target_position.z],
+                "success_radius": subtask.success_radius,
+                "planned_pose": to_json_dict(target_pose),
+                "final_pose": to_json_dict(final_pose),
+                "path": step_result.path,
+                "path_length": step_result.path_length,
+                "micro_steps": step_result.steps,
+            }
+            if recorder is not None:
+                candidate_record.update(
                     {
-                        "episode_id": episode.episode_id,
-                        "subtask_id": subtask.subtask_id,
-                        "scene_name": episode.scene_name,
-                        "layout_id": episode.layout_id,
-                        "state_index": episode.state_index,
-                        "round": round_idx,
-                        "fallback_reason": fallback_reason,
-                        "selected_candidate": selected_candidate_record,
-                        "top_candidates": last_candidates,
-                        **planning_info,
-                        "target_position": [subtask.target_position.x, subtask.target_position.z],
-                        "success_radius": subtask.success_radius,
-                        "planned_pose": to_json_dict(target_pose),
-                        "final_pose": to_json_dict(final_pose),
-                        "path": step_result.path,
-                        "path_length": step_result.path_length,
-                        "micro_steps": step_result.steps,
+                        "video_path": str(recorder.video_path),
+                        "video_frame_start": round_video_start,
+                        "video_frame_end": max(0, recorder.frame_count - 1),
                     }
                 )
-            )
+            candidate_records.append(_safe_json_value(candidate_record))
             if planning_info.get("selected_room_id"):
                 previous_room_id = str(planning_info.get("selected_room_id"))
                 recent_rooms.append(previous_room_id)
@@ -817,8 +899,15 @@ def run_episode_temporal(
                 step=total_steps,
                 state_index=episode.state_index,
                 layout_id=episode.layout_id,
+                frame_context={
+                    "episode_id": episode.episode_id,
+                    "subtask_id": subtask.subtask_id,
+                    "round": round_idx,
+                    "phase": "POST_OBSERVE",
+                },
             )
             observation_records.extend(post_obs.records)
+            post_memory_events: List[Dict[str, Any]] = []
             for event in memory.update_from_detections(
                 post_obs.detections,
                 state_index=episode.state_index,
@@ -836,6 +925,7 @@ def run_episode_temporal(
                     }
                 )
                 memory_events.append(event_record)
+                post_memory_events.append(event_record)
             post_target_diag = _target_detection_diagnostics(
                 post_obs.detections,
                 query,
@@ -857,11 +947,23 @@ def run_episode_temporal(
                 )
                 if event is not None:
                     record = event.to_dict()
+                    record.update(
+                        {
+                            "episode_id": episode.episode_id,
+                            "subtask_id": subtask.subtask_id,
+                            "scene_name": episode.scene_name,
+                            "round": round_idx,
+                            "observation_phase": "negative_feedback",
+                        }
+                    )
                     feedback_records.append(record)
                     memory_events.append(record)
                 selected_room = planning_info.get("selected_room_id")
                 if selected_room:
                     failed_rooms[str(selected_room)] += 1
+            if recorder is not None:
+                new_feedback = feedback_records[-1:] if feedback_records else []
+                recorder.record_feedback_state(feedback=new_feedback, memory_events=post_memory_events, phase="FEEDBACK")
 
         final_dist = _trace_distance(final_pose, subtask)
         benchmark_success = final_dist <= float(subtask.success_radius)
@@ -940,6 +1042,20 @@ def run_episode_temporal(
                 }
             )
         )
+        if recorder is not None:
+            recorder.finish_subtask(
+                {
+                    "success": bool(benchmark_success),
+                    "found": bool(benchmark_success),
+                    "perception_found": bool(perception_found),
+                    "final_dist": float(final_dist),
+                    "path_length": round(float(path_length), 6),
+                    "steps": int(subtask_steps),
+                }
+            )
+            loop.set_frame_callback(None)
+        else:
+            loop.set_frame_callback(None)
 
     trajectory = Trajectory(
         episode_id=episode.episode_id,
@@ -997,6 +1113,18 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
     output_dir = as_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     args.target_name_map_data = load_target_name_map(args.target_name_map)
+    if bool(getattr(args, "record_search_video", False)):
+        args.video_selector = VideoSelector.parse(getattr(args, "video_subtasks", "") or "0:0")
+        video_output_dir = getattr(args, "video_output_dir", "")
+        args.video_output_dir_resolved = str(as_path(video_output_dir) if video_output_dir else output_dir / "videos")
+        args.video_fps = float(getattr(args, "video_fps", 8.0))
+        args.video_width = int(getattr(args, "video_width", 1600))
+        args.video_height = int(getattr(args, "video_height", 900))
+        args.video_include_observation_views = bool(getattr(args, "video_include_observation_views", False))
+        args.video_max_candidate_k = int(getattr(args, "video_max_candidate_k", 5))
+    else:
+        args.video_selector = None
+        args.video_output_dir_resolved = ""
     global_labels = _collect_prompt_labels(
         episodes,
         target_name_map=args.target_name_map_data,
@@ -1039,7 +1167,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             remote_vision_local_port=args.remote_vision_local_port,
         )
         with run_path.open("w", encoding="utf-8") as run_f, diag_path.open("w", encoding="utf-8") as diag_f, candidate_path.open("w", encoding="utf-8") as cand_f, observation_path.open("w", encoding="utf-8") as obs_f, memory_updates_path.open("w", encoding="utf-8") as mem_f, feedback_path.open("w", encoding="utf-8") as fb_f, transitions_path.open("w", encoding="utf-8") as trans_f:
-            for episode in episodes:
+            for episode_index, episode in enumerate(episodes):
                 warnings.extend(index.validate_episode_layout(episode))
                 memory = memories.setdefault(episode.scene_name, SceneMemory(episode.scene_name))
                 layout_key = (episode.scene_name, episode.layout_id)
@@ -1108,6 +1236,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     memory,
                     loop,
                     args,
+                    episode_index=episode_index,
                     global_labels=global_labels,
                 )
                 compaction_events = memory.compact_duplicates(
@@ -1164,6 +1293,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         for scene_name, memory in memories.items():
             write_json(output_dir / "scene_memory" / scene_name / "scene_memory_final.json", memory.to_dict())
         write_json(output_dir / "temporal_summary.json", _temporal_summary(all_diagnostics))
+        if bool(getattr(args, "record_search_video", False)) and args.video_selector is not None:
+            for token in args.video_selector.unmatched_tokens():
+                warnings.append(f"video_subtask_selector_unmatched:{token}")
         write_json(output_dir / "adapter_warnings.json", {"warnings": warnings, "warning_count": len(warnings)})
         write_json(
             output_dir / "target_name_normalization.json",
@@ -1218,6 +1350,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "benchmark_summary": benchmark_result.get("summary", {}),
         "warnings": len(warnings),
     }
+    if bool(getattr(args, "record_search_video", False)):
+        result["videos"] = str(getattr(args, "video_output_dir_resolved", ""))
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -1315,6 +1449,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=6000,
         help="Maximum random navigable points used to estimate visualization bounds.",
     )
+    parser.add_argument("--record-search-video", action="store_true", help="Record composite MP4 dashboards for selected subtasks.")
+    parser.add_argument(
+        "--video-subtasks",
+        default="0:0",
+        help="Comma-separated selectors such as '0:0,0:3,<subtask_id>'. Used only with --record-search-video.",
+    )
+    parser.add_argument(
+        "--video-output-dir",
+        default="",
+        help="Directory for search videos. Defaults to <output-dir>/videos.",
+    )
+    parser.add_argument("--video-fps", type=float, default=8.0)
+    parser.add_argument("--video-width", type=int, default=1600)
+    parser.add_argument("--video-height", type=int, default=900)
+    parser.add_argument("--video-include-observation-views", action="store_true")
+    parser.add_argument("--video-max-candidate-k", type=int, default=5)
     parser.add_argument(
         "--target-name-map",
         default=None,
