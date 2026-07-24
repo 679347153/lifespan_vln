@@ -295,9 +295,14 @@ class SearchVideoRecorder:
     def _rgb_to_bgr(self, rgb: np.ndarray) -> np.ndarray:
         image = np.asarray(rgb)
         if image.ndim == 2:
-            image = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+            if np.issubdtype(image.dtype, np.floating) and float(np.nanmax(image)) <= 1.5:
+                image = image * 255.0
+            image = cv2.cvtColor(np.clip(image, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
         if image.ndim == 3 and image.shape[2] >= 3:
-            image = image[:, :, :3].astype(np.uint8)
+            image = image[:, :, :3]
+            if np.issubdtype(image.dtype, np.floating) and float(np.nanmax(image)) <= 1.5:
+                image = image * 255.0
+            image = np.clip(image, 0, 255).astype(np.uint8)
             return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         return np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -482,9 +487,101 @@ class SearchVideoRecorder:
             cv2.putText(out, _short(det.get("label", ""), 24), (x0, max(14, y0 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (70, 220, 255), 1, cv2.LINE_AA)
         return out
 
+    def _draw_phase_overview(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
+        rx, ry, rw, rh = rect
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (240, 244, 248), -1)
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (190, 202, 216), 1)
+        title = f"{self.phase} | round={self.round_index}"
+        cv2.putText(canvas, title, (rx + 24, ry + 46), cv2.FONT_HERSHEY_SIMPLEX, 0.88, (35, 45, 60), 2, cv2.LINE_AA)
+        lines: List[str] = []
+        selected = self.selected_candidate or {}
+        if self.phase == "PLAN":
+            lines.extend(
+                [
+                    f"planning_mode: {self.planning_info.get('planning_mode', '')}",
+                    f"selected_room: {self.planning_info.get('selected_room_id', '')}",
+                    f"pose_source: {self.planning_info.get('selected_pose_source', '')}",
+                    f"room_switch: {self.planning_info.get('room_switch_reason', '')}",
+                    f"selected_candidate: {_short(selected.get('label', ''), 42)}",
+                    f"selected_score: {_fmt(selected.get('S_final', selected.get('score', '')))}",
+                ]
+            )
+            if self.planned_pose is not None:
+                lines.append(f"planned_pose: x={_fmt(self.planned_pose.x)} z={_fmt(self.planned_pose.z)} yaw={_fmt(self.planned_pose.yaw, 1)}")
+            lines.append("")
+            lines.append("Top candidates:")
+            for idx, cand in enumerate(self.candidates[: min(8, self.max_candidate_k)]):
+                lines.append(
+                    f"{idx+1}. {_short(cand.get('label', ''), 30)} "
+                    f"S={_fmt(cand.get('S_final', cand.get('score', '')))} "
+                    f"backend={_short(cand.get('sim_backend', ''), 24)}"
+                )
+        elif self.phase == "FEEDBACK":
+            lines.extend(
+                [
+                    f"feedback_events: {len(self.feedback_events)}",
+                    f"memory_events_total: {len(self.memory_events)}",
+                    f"current_round: {self.round_index}",
+                    "",
+                    "Latest feedback:",
+                ]
+            )
+            for event in self.feedback_events[-8:]:
+                lines.append(f"- {_short(event.get('label', ''), 32)} | {_short(event.get('reason', ''), 46)}")
+            if not self.feedback_events:
+                lines.append("- no negative feedback in this phase")
+            lines.append("")
+            lines.append("Current memory delta:")
+            current = [e for e in self.memory_events if e.get("round") == self.round_index]
+            for event in current[-8:]:
+                details = event.get("details") if isinstance(event.get("details"), dict) else {}
+                lines.append(f"- {_short(event.get('event', ''), 18)} {_short(event.get('label', ''), 30)} room={_short(details.get('room_id', ''), 18)}")
+        elif self.phase == "SUMMARY":
+            lines.extend(
+                [
+                    f"target: {self.context.get('target_object', '')}",
+                    f"query: {self.context.get('query_label', '')}",
+                    f"success/found: {self.context.get('success', self.context.get('found', ''))}",
+                    f"perception_found: {self.context.get('perception_found', '')}",
+                    f"final_dist: {_fmt(self.context.get('final_dist'))}",
+                    f"path_length: {_fmt(self.context.get('path_length'))}",
+                    f"steps: {self.context.get('steps', '')}",
+                    f"geometry_loaded: {self.geometry_loaded}",
+                    f"recorded_phases: {', '.join(self.recorded_phases[-10:])}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "No RGB frame is available for this phase.",
+                    "The map, planning panel, memory panel and timeline remain valid.",
+                    f"trajectory_points: {len(self.trajectory)}",
+                    f"candidates: {len(self.candidates)}",
+                    f"memory_events: {len(self.memory_events)}",
+                ]
+            )
+        y = ry + 92
+        for line in lines:
+            cv2.putText(canvas, str(line)[:110], (rx + 28, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (38, 52, 70), 1, cv2.LINE_AA)
+            y += 30
+            if y > ry + rh - 24:
+                break
+        if self.last_rgb is not None and self.phase in {"PLAN", "FEEDBACK", "SUMMARY"}:
+            inset_w = min(320, max(180, rw // 4))
+            inset_h = min(220, max(130, rh // 4))
+            inset = self._fit(self.last_rgb, inset_w, inset_h, background=(22, 26, 32))
+            ix = rx + rw - inset_w - 20
+            iy = ry + 20
+            canvas[iy : iy + inset_h, ix : ix + inset_w] = inset
+            cv2.rectangle(canvas, (ix, iy), (ix + inset_w, iy + inset_h), (80, 92, 110), 1)
+            cv2.putText(canvas, "last RGB", (ix + 8, iy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (245, 250, 255), 1, cv2.LINE_AA)
+
     def _draw_visual_panel(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
         rx, ry, rw, rh = rect
         cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (12, 15, 20), -1)
+        if self.phase in {"PLAN", "FEEDBACK", "SUMMARY"}:
+            self._draw_phase_overview(canvas, rect)
+            return
         if "OBSERVE" in self.phase and self.include_observation_views:
             source_phase = self.phase.replace("_SUMMARY", "")
             views = self.observation_views.get((source_phase, int(self.round_index or 0)), {})
@@ -506,7 +603,13 @@ class SearchVideoRecorder:
                     cv2.rectangle(canvas, (cx, cy), (cx + min(cell_w, 260), cy + 22), (0, 0, 0), -1)
                     cv2.putText(canvas, label, (cx + 6, cy + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (245, 250, 255), 1, cv2.LINE_AA)
                 return
+            if "_SUMMARY" in self.phase:
+                self._draw_phase_overview(canvas, rect)
+                return
         img = self._draw_detection_boxes(self.last_rgb, self.detections) if self.last_rgb is not None and "OBSERVE" in self.phase else self.last_rgb
+        if img is None or getattr(img, "size", 0) == 0:
+            self._draw_phase_overview(canvas, rect)
+            return
         canvas[ry : ry + rh, rx : rx + rw] = self._fit(img, rw, rh)
 
     def _draw_planning_panel(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
