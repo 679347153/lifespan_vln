@@ -426,12 +426,12 @@ class HabitatLayoutAdapter:
         except Exception:
             found = False
         if not found:
-            return [goal]
+            return []
         points = getattr(path, "points", None) or []
         out: List[Pose] = []
         for point in points[1:]:
             out.append(Pose(float(point[0]), float(point[1]), float(point[2]), goal.yaw))
-        return out or [goal]
+        return out
 
     def geodesic_distance(self, start: Pose | Sequence[float], goal: Pose | Sequence[float]) -> float:
         pf = self.pathfinder

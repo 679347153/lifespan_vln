@@ -303,11 +303,14 @@ def _path_distance(loop: HabitatVisionLoop, start: Pose, goal: Pose) -> float:
         return euclidean_2d([start.x, start.z], [goal.x, goal.z])
     try:
         snapped = loop.adapter.snap_pose(goal)
+        dist = loop.adapter.geodesic_distance(start, snapped)
+        if math.isfinite(float(dist)):
+            return float(dist)
         points = loop.adapter.shortest_path_points(start, snapped)
     except Exception:
-        return euclidean_2d([start.x, start.z], [goal.x, goal.z])
+        return float("inf")
     if not points:
-        return euclidean_2d([start.x, start.z], [goal.x, goal.z])
+        return float("inf")
     dist = 0.0
     last = start
     for point in points:
@@ -372,10 +375,13 @@ def _approach_pose_for_candidate(
                 math.degrees(math.atan2(center_x - (center_x + radius * math.cos(angle)), center_z - (center_z + radius * math.sin(angle)))),
             )
             try:
-                snapped = loop.adapter.snap_pose(raw)
+                safety = loop.validate_and_project_goal(raw)
             except Exception:
                 continue
-            path_dist = _path_distance(loop, current_pose, snapped)
+            if not safety.valid or safety.safe_waypoint is None:
+                continue
+            snapped = safety.safe_waypoint
+            path_dist = float(safety.geodesic_distance or _path_distance(loop, current_pose, snapped))
             object_dist = euclidean_2d([snapped.x, snapped.z], [center_x, center_z])
             revisit = 0.0
             for prev in recent_poses[-6:]:
@@ -391,10 +397,14 @@ def _approach_pose_for_candidate(
                     "object_distance": round(float(object_dist), 6),
                     "geodesic_distance": round(float(path_dist), 6),
                     "revisit_penalty": round(float(revisit), 6),
+                    "nav_safety": safety.to_dict(),
                 }
     if best_pose is None:
-        pose = loop.adapter.snap_pose(Pose(center_x, float(current_pose.y), center_z, float(current_pose.yaw)))
-        return pose, {"source": "object_center_snap_fallback"}
+        requested = Pose(center_x, float(current_pose.y), center_z, float(current_pose.yaw))
+        safety = loop.validate_and_project_goal(requested)
+        if safety.valid and safety.safe_waypoint is not None:
+            return safety.safe_waypoint, {"source": "object_center_safe_fallback", "nav_safety": safety.to_dict()}
+        return current_pose, {"source": "object_center_rejected", "nav_safety": safety.to_dict()}
     return best_pose, best_terms
 
 
@@ -419,12 +429,20 @@ def _select_room_level_goal(
         room_groups[_candidate_room_id(cand, memory)].append(cand)
     room_rows: List[Dict[str, Any]] = []
     raw_distances: Dict[str, float] = {}
+    room_safety: Dict[str, Dict[str, Any]] = {}
     for room_id, items in room_groups.items():
         top_items = sorted(items, key=lambda c: -float(c.S_final))[: max(1, int(args.room_top_k_objects))]
         rep_pose = _room_representative_pose(top_items, current_pose)
-        raw_distances[room_id] = _path_distance(loop, current_pose, rep_pose)
-    max_dist = max(raw_distances.values(), default=1.0) or 1.0
+        safety = loop.validate_and_project_goal(rep_pose)
+        room_safety[room_id] = safety.to_dict()
+        raw_distances[room_id] = float(safety.geodesic_distance) if safety.valid and safety.geodesic_distance is not None else float("inf")
+    finite_distances = [d for d in raw_distances.values() if math.isfinite(float(d))]
+    if not finite_distances:
+        return None, None, {"selected_pose_source": "no_reachable_room", "room_scores_top": []}, 0
+    max_dist = max(finite_distances, default=1.0) or 1.0
     for room_id, items in room_groups.items():
+        if not math.isfinite(float(raw_distances.get(room_id, float("inf")))):
+            continue
         ranked = sorted(items, key=lambda c: -float(c.S_final))
         top_items = ranked[: max(1, int(args.room_top_k_objects))]
         object_scores = [float(c.S_final) for c in top_items]
@@ -462,8 +480,11 @@ def _select_room_level_goal(
                 },
                 "top_object_ids": [c.obj_id for c in top_items],
                 "top_labels": [c.label for c in top_items],
+                "nav_safety": room_safety.get(room_id, {}),
             }
         )
+    if not room_rows:
+        return None, None, {"selected_pose_source": "no_reachable_room", "room_scores_top": []}, 0
     room_rows.sort(key=lambda item: (-float(item["score"]), str(item["room_id"])))
     selected_room = room_rows[0]
     switch_reason = "best_room"
@@ -482,7 +503,13 @@ def _select_room_level_goal(
         representative = _room_representative_pose(room_candidates[: max(1, int(args.room_top_k_objects))], current_pose)
         selected_pose_source = "room_representative_pose"
         try:
-            target_pose = loop.adapter.snap_pose(representative) if loop.adapter is not None else representative
+            safety = loop.validate_and_project_goal(representative)
+            if safety.valid and safety.safe_waypoint is not None:
+                target_pose = safety.safe_waypoint
+                approach_details = {"source": "room_representative_safe_pose", "nav_safety": safety.to_dict()}
+            else:
+                target_pose = representative
+                approach_details = {"source": "room_representative_rejected", "nav_safety": safety.to_dict()}
         except Exception:
             target_pose = representative
     else:
@@ -505,7 +532,7 @@ def _select_room_level_goal(
     return selected_candidate, target_pose, planning_info, next_commit
 
 
-def _fallback_pose(loop: HabitatVisionLoop, episode: Episode, subtask: Subtask, round_idx: int) -> Pose:
+def _fallback_pose(loop: HabitatVisionLoop, episode: Episode, subtask: Subtask, round_idx: int, args: argparse.Namespace) -> Tuple[Pose, Dict[str, Any]]:
     if loop.adapter is None or loop.adapter.sim is None:
         rng = random.Random(episode.seed + round_idx)
         return Pose(
@@ -513,11 +540,14 @@ def _fallback_pose(loop: HabitatVisionLoop, episode: Episode, subtask: Subtask, 
             float(loop.current_pose.y),  # type: ignore[union-attr]
             float(loop.current_pose.z + rng.uniform(-1.0, 1.0)),  # type: ignore[union-attr]
             float(loop.current_pose.yaw),  # type: ignore[union-attr]
-        )
-    point = loop.adapter.pathfinder.get_random_navigable_point()
-    if point is None:
-        return loop.current_pose or episode.start_pose
-    return Pose(float(point[0]), float(point[1]), float(point[2]), float((loop.current_pose or episode.start_pose).yaw))
+        ), {"reason": "euclidean_local_fallback"}
+    pose, details = loop.sample_local_fallback_pose(
+        radius_min=float(args.local_fallback_radius_min),
+        radius_max=float(args.local_fallback_radius_max),
+    )
+    if pose is None:
+        return loop.current_pose or episode.start_pose, {"reason": "safe_navigation_no_valid_goal", **details}
+    return pose, details
 
 
 def _rank_with_remote_clip(
@@ -826,10 +856,14 @@ def run_episode_temporal(
                     planning_info = {"planning_mode": "object", "selected_pose_source": "object_center"}
                 fallback_reason = None
             else:
-                target_pose = _fallback_pose(loop, episode, subtask, round_idx)
-                fallback_reason = "no_candidate"
+                target_pose, fallback_details = _fallback_pose(loop, episode, subtask, round_idx, args)
+                fallback_reason = str(fallback_details.get("reason") or "no_candidate")
                 fallback_count += 1
-                planning_info = {"planning_mode": args.planning_mode, "selected_pose_source": "random_navmesh_fallback"}
+                planning_info = {
+                    "planning_mode": args.planning_mode,
+                    "selected_pose_source": fallback_reason,
+                    "fallback_details": fallback_details,
+                }
 
             selected_candidate_record = None
             if selected_candidate is not None:
@@ -849,6 +883,7 @@ def run_episode_temporal(
                     round_index=round_idx,
                 )
             remaining_steps = max(1, int(args.max_steps_per_subtask) - subtask_steps)
+            step_start_pose = loop.current_pose or current_pose
             step_result = loop.step_to(
                 target_pose,
                 max_micro_steps=min(int(args.micro_steps_per_round), remaining_steps),
@@ -864,6 +899,14 @@ def run_episode_temporal(
             path_length += step_result.path_length
             current_pose = step_result.final_pose
             final_pose = step_result.final_pose
+            path_adjacent_distances = [
+                euclidean_2d([a["x"], a["z"]], [b["x"], b["z"]])
+                for a, b in zip(
+                    [{"x": step_start_pose.x, "z": step_start_pose.z}, *step_result.path[:-1]],
+                    step_result.path,
+                )
+            ]
+            nav_safety = dict(step_result.nav_safety or {})
             candidate_record = {
                 "episode_id": episode.episode_id,
                 "subtask_id": subtask.subtask_id,
@@ -882,6 +925,18 @@ def run_episode_temporal(
                 "path": step_result.path,
                 "path_length": step_result.path_length,
                 "micro_steps": step_result.steps,
+                "nav_safety": nav_safety,
+                "requested_pose": nav_safety.get("requested_pose"),
+                "snapped_pose": nav_safety.get("snapped_pose"),
+                "safe_waypoint": nav_safety.get("safe_waypoint"),
+                "snap_distance": nav_safety.get("snap_distance"),
+                "geodesic_distance": nav_safety.get("geodesic_distance"),
+                "path_resampled_points": nav_safety.get("path_resampled_points"),
+                "nav_reject_reason": nav_safety.get("reject_reason"),
+                "nav_backend": nav_safety.get("backend"),
+                "nav_clipped": nav_safety.get("clipped"),
+                "adjacent_nav_distances": [round(float(v), 6) for v in path_adjacent_distances],
+                "max_adjacent_nav_distance": max(path_adjacent_distances) if path_adjacent_distances else 0.0,
             }
             if recorder is not None:
                 candidate_record.update(
@@ -1157,6 +1212,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
 
     memories: Dict[str, SceneMemory] = {}
     all_diagnostics: List[Dict[str, Any]] = []
+    all_candidate_records: List[Dict[str, Any]] = []
     warnings: List[str] = []
     exported_geometry_scenes: set[str] = set()
     current_layout_key: Optional[Tuple[str, str]] = None
@@ -1181,7 +1237,15 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             remote_vision_ssh_password=args.remote_vision_ssh_password,
             remote_vision_remote_port=args.remote_vision_remote_port,
             remote_vision_local_port=args.remote_vision_local_port,
+            nav_execution_backend=args.nav_execution_backend,
+            max_snap_distance=args.max_snap_distance,
+            same_floor_y_tolerance=args.same_floor_y_tolerance,
+            max_nav_segment_length=args.max_nav_segment_length,
+            max_goal_geodesic_per_round=args.max_goal_geodesic_per_round,
+            strict_nav_safety=bool(args.strict_nav_safety),
         )
+        if loop.nav_backend_warning:
+            warnings.append(loop.nav_backend_warning)
         with run_path.open("w", encoding="utf-8") as run_f, diag_path.open("w", encoding="utf-8") as diag_f, candidate_path.open("w", encoding="utf-8") as cand_f, observation_path.open("w", encoding="utf-8") as obs_f, memory_updates_path.open("w", encoding="utf-8") as mem_f, feedback_path.open("w", encoding="utf-8") as fb_f, transitions_path.open("w", encoding="utf-8") as trans_f:
             for episode_index, episode in enumerate(episodes):
                 warnings.extend(index.validate_episode_layout(episode))
@@ -1276,6 +1340,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     all_diagnostics.append(record)
                     diag_f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 for record in candidates:
+                    all_candidate_records.append(record)
                     cand_f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 for record in observations:
                     obs_f.write(json.dumps(_safe_json_value(record), ensure_ascii=False) + "\n")
@@ -1312,6 +1377,8 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         if bool(getattr(args, "record_search_video", False)) and args.video_selector is not None:
             for token in args.video_selector.unmatched_tokens():
                 warnings.append(f"video_subtask_selector_unmatched:{token}")
+        if loop is not None and loop.nav_backend_warning and loop.nav_backend_warning not in warnings:
+            warnings.append(loop.nav_backend_warning)
         write_json(output_dir / "adapter_warnings.json", {"warnings": warnings, "warning_count": len(warnings)})
         write_json(
             output_dir / "target_name_normalization.json",
@@ -1335,8 +1402,34 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                     "room_negative_penalty_weight": float(args.room_negative_penalty_weight),
                     "room_distance_weight": float(args.room_distance_weight),
                 },
+                "navigation_safety": {
+                    "nav_execution_backend": args.nav_execution_backend,
+                    "resolved_nav_backend": loop.nav_backend if loop is not None else None,
+                    "max_snap_distance": float(args.max_snap_distance),
+                    "same_floor_y_tolerance": float(args.same_floor_y_tolerance),
+                    "max_nav_segment_length": float(args.max_nav_segment_length),
+                    "max_goal_geodesic_per_round": float(args.max_goal_geodesic_per_round),
+                    "local_fallback_radius_min": float(args.local_fallback_radius_min),
+                    "local_fallback_radius_max": float(args.local_fallback_radius_max),
+                    "strict_nav_safety": bool(args.strict_nav_safety),
+                },
             },
         )
+        nav_rejected = [r for r in all_candidate_records if r.get("nav_reject_reason")]
+        nav_clipped = [r for r in all_candidate_records if r.get("nav_clipped")]
+        snap_values = [float(r["snap_distance"]) for r in all_candidate_records if r.get("snap_distance") is not None]
+        adjacent_values = [float(v) for r in all_candidate_records for v in (r.get("adjacent_nav_distances") or [])]
+        scene_outside = [r for r in nav_rejected if r.get("nav_reject_reason") in {"too_far_from_navmesh", "path_not_found", "different_floor_after_snap"}]
+        navigation_summary = {
+            "nav_backend": loop.nav_backend if loop is not None else None,
+            "nav_rejected_goals": len(nav_rejected),
+            "nav_clipped_goals": len(nav_clipped),
+            "avg_snap_distance": sum(snap_values) / len(snap_values) if snap_values else None,
+            "max_adjacent_nav_distance": max(adjacent_values) if adjacent_values else 0.0,
+            "scene_outside_goal_count": len(scene_outside),
+            "reject_reasons": dict(sorted({reason: sum(1 for r in nav_rejected if r.get("nav_reject_reason") == reason) for reason in {r.get("nav_reject_reason") for r in nav_rejected}}.items())),
+        }
+        write_json(output_dir / "navigation_summary.json", navigation_summary)
         if loop is not None:
             write_json(output_dir / "perception_summary.json", loop.perception_summary())
 
@@ -1364,6 +1457,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         "negative_feedback": str(feedback_path),
         "layout_transitions": str(transitions_path),
         "benchmark_summary": benchmark_result.get("summary", {}),
+        "navigation_summary": navigation_summary,
         "warnings": len(warnings),
     }
     if bool(getattr(args, "record_search_video", False)):
@@ -1400,6 +1494,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-steps-per-subtask", type=int, default=80)
     parser.add_argument("--micro-steps-per-round", type=int, default=8)
     parser.add_argument("--max-rounds", type=int, default=5)
+    parser.add_argument("--nav-execution-backend", choices=("auto", "habitat-lab", "pathfinder"), default="auto")
+    parser.add_argument("--max-snap-distance", type=float, default=1.0)
+    parser.add_argument("--same-floor-y-tolerance", type=float, default=0.75)
+    parser.add_argument("--max-nav-segment-length", type=float, default=0.5)
+    parser.add_argument("--max-goal-geodesic-per-round", type=float, default=2.0)
+    parser.add_argument("--local-fallback-radius-min", type=float, default=1.0)
+    parser.add_argument("--local-fallback-radius-max", type=float, default=3.0)
+    parser.add_argument("--strict-nav-safety", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-candidates", type=int, default=10)
     parser.add_argument("--max-detect-labels", type=int, default=80)
     parser.add_argument(

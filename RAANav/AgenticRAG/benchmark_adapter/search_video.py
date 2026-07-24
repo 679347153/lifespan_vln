@@ -42,6 +42,12 @@ def _event_xz(event: Dict[str, Any]) -> Optional[Tuple[float, float]]:
     return None
 
 
+def _pose_xz_dict(pose: Any) -> Optional[Tuple[float, float]]:
+    if isinstance(pose, dict) and "x" in pose and "z" in pose:
+        return _safe_float(pose.get("x")), _safe_float(pose.get("z"))
+    return None
+
+
 def _short(value: Any, max_len: int = 36) -> str:
     text = str(value if value is not None else "")
     return text if len(text) <= max_len else text[: max_len - 1] + "~"
@@ -366,6 +372,8 @@ class SearchVideoRecorder:
             xz = _event_xz(event)
             if xz:
                 points.append(xz)
+        for item in self._nav_safety_points():
+            points.append((item[1][0], item[1][1]))
         if not points:
             return -5.0, 5.0, -5.0, 5.0
         xs = [p[0] for p in points]
@@ -386,6 +394,21 @@ class SearchVideoRecorder:
             current_round = self.round_index
             return [e for e in self.memory_events[-200:] if e.get("round") == current_round]
         return list(self.memory_events[-100:])
+
+    def _nav_safety_points(self) -> List[Tuple[str, Tuple[float, float]]]:
+        safety = {}
+        approach = self.planning_info.get("approach_terms") if isinstance(self.planning_info, dict) else None
+        fallback = self.planning_info.get("fallback_details") if isinstance(self.planning_info, dict) else None
+        if isinstance(approach, dict) and isinstance(approach.get("nav_safety"), dict):
+            safety = approach.get("nav_safety") or {}
+        if isinstance(fallback, dict) and isinstance(fallback.get("nav_safety"), dict):
+            safety = fallback.get("nav_safety") or safety
+        points: List[Tuple[str, Tuple[float, float]]] = []
+        for label, key in (("requested", "requested_pose"), ("snapped", "snapped_pose"), ("safe", "safe_waypoint")):
+            xz = _pose_xz_dict(safety.get(key))
+            if xz:
+                points.append((label, xz))
+        return points
 
     def _draw_geometry(self, canvas: np.ndarray, rect: Tuple[int, int, int, int], bounds: Tuple[float, float, float, float]) -> None:
         if not self.scene_geometry:
@@ -467,6 +490,11 @@ class SearchVideoRecorder:
             px, py = self._project(xz[0], xz[1], bounds, rect)
             color = (40, 80, 220) if event.get("event") == "negative_feedback" else (255, 160, 50)
             cv2.circle(canvas, (px, py), 3, color, -1, cv2.LINE_AA)
+        for label, xz in self._nav_safety_points():
+            px, py = self._project(xz[0], xz[1], bounds, rect)
+            color = {"requested": (60, 60, 230), "snapped": (20, 160, 245), "safe": (90, 175, 40)}.get(label, (80, 80, 80))
+            cv2.drawMarker(canvas, (px, py), color, cv2.MARKER_DIAMOND, 14, 2, cv2.LINE_AA)
+            cv2.putText(canvas, label, (px + 7, py - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
         status = "geometry loaded" if self.geometry_loaded else "geometry unavailable"
         cv2.putText(canvas, f"2D map | {status}", (rx + 10, ry + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (70, 82, 98), 1, cv2.LINE_AA)
 
