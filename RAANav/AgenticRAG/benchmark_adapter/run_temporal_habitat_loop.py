@@ -691,7 +691,7 @@ def run_episode_temporal(
                         "layout_id": episode.layout_id,
                         "state_index": int(episode.state_index),
                         "target_object": subtask.target_object,
-                        "query_label": query.label,
+                        "query_label": query.query_label,
                         "target_position": [subtask.target_position.x, subtask.target_position.z],
                         "success_radius": subtask.success_radius,
                     },

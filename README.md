@@ -29,26 +29,25 @@
 真实长期闭环：
 
 ```bash
-python -m RAANav.AgenticRAG.benchmark_adapter.run_temporal_habitat_loop
+python log_filter.py --run "python -m RAANav.AgenticRAG.benchmark_adapter.run_temporal_habitat_loop"
 ```
 
 诊断：
 
 ```bash
-python -m RAANav.AgenticRAG.benchmark_adapter.diagnose_temporal_run
+python log_filter.py --run "python -m RAANav.AgenticRAG.benchmark_adapter.diagnose_temporal_run"
 ```
 
 HTML 可视化：
 
 ```bash
-python -m RAANav.AgenticRAG.benchmark_adapter.visualize_temporal_run
+python log_filter.py --run "python -m RAANav.AgenticRAG.benchmark_adapter.visualize_temporal_run"
 ```
 
 远程视觉服务：
 
 ```bash
-bash remote_vision_server/run_server.sh
+python log_filter.py --run "bash remote_vision_server/run_server.sh"
 ```
 
 更多可复制命令见 [doc/07_常用命令汇总.md](doc/07_常用命令汇总.md)。
-

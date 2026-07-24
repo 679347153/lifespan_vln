@@ -116,8 +116,8 @@ failure_bucket = perception_empty
 排查：
 
 ```bash
-curl http://127.0.0.1:50220/health
-python remote_vision_server/test_client.py --base-url http://127.0.0.1:50220 --image objects_images/Camera_01.webp --prompt "camera . chair . table ."
+python log_filter.py --run "curl http://127.0.0.1:50220/health"
+python log_filter.py --run "python remote_vision_server/test_client.py --base-url http://127.0.0.1:50220 --image objects_images/Camera_01.webp --prompt 'camera . chair . table .'"
 ```
 
 ### 3.2 候选为空
@@ -182,4 +182,3 @@ duplicate_compaction 事件多
    - 仅当前轮增量
    - 最终快照
 6. 对问题 subtask 开启 `--record-search-video`，查看实时过程。
-
