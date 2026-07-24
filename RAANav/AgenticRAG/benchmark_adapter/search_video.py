@@ -159,6 +159,7 @@ class SearchVideoRecorder:
         self.feedback_events: List[Dict[str, Any]] = []
         self.detections: List[Dict[str, Any]] = []
         self.observation_views: Dict[Tuple[str, int], Dict[int, Dict[str, Any]]] = {}
+        self.last_view_count: int = 0
         self.selected_rounds: List[int] = []
         self.recorded_phases: List[str] = []
         self.recorded_views_per_round: Dict[str, List[int]] = {}
@@ -198,12 +199,19 @@ class SearchVideoRecorder:
         views = set(self.recorded_views_per_round.get(view_key, []))
         views.add(view_idx)
         self.recorded_views_per_round[view_key] = sorted(views)
+        self.last_view_count = max(self.last_view_count, len(views))
         if not self.include_observation_views and view_idx != 0:
             return
         self.phase = phase_name
         self.round_index = round_idx
-        self.detections = [dict(item) for item in detections[:20]]
-        if not self.include_observation_views:
+        if self.include_observation_views:
+            merged: List[Dict[str, Any]] = []
+            for item in self.observation_views.get((phase_name, round_idx), {}).values():
+                merged.extend(dict(det) for det in item.get("detections", [])[:20])
+            self.detections = merged[:80]
+            self._write_frame()
+        else:
+            self.detections = [dict(item) for item in detections[:20]]
             self._write_frame()
 
     def record_observation_summary(self, *, phase: str, round_index: int, repeat: int = 2) -> None:
@@ -517,10 +525,30 @@ class SearchVideoRecorder:
 
     def _draw_phase_overview(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
         rx, ry, rw, rh = rect
-        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (240, 244, 248), -1)
-        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (190, 202, 216), 1)
+        phase_base = self.phase.replace("_SUMMARY", "")
+        palette = {
+            "PLAN": ((226, 240, 255), (45, 95, 185)),
+            "FEEDBACK": ((236, 246, 236), (50, 130, 70)),
+            "SUMMARY": ((242, 239, 255), (95, 70, 170)),
+            "PRE_OBSERVE": ((236, 246, 255), (40, 115, 170)),
+            "POST_OBSERVE": ((236, 246, 255), (40, 115, 170)),
+        }
+        bg, accent = palette.get(phase_base, ((240, 244, 248), (70, 82, 98)))
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), bg, -1)
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), accent, 2)
+        cv2.rectangle(canvas, (rx + 18, ry + 18), (rx + rw - 18, ry + 76), accent, -1)
         title = f"{self.phase} | round={self.round_index}"
-        cv2.putText(canvas, title, (rx + 24, ry + 46), cv2.FONT_HERSHEY_SIMPLEX, 0.88, (35, 45, 60), 2, cv2.LINE_AA)
+        cv2.putText(canvas, title, (rx + 34, ry + 56), cv2.FONT_HERSHEY_SIMPLEX, 0.92, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            "Non-RGB decision phase: map, candidate table, memory delta and timeline are synchronized on this frame.",
+            (rx + 24, ry + 106),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (70, 82, 98),
+            1,
+            cv2.LINE_AA,
+        )
         lines: List[str] = []
         selected = self.selected_candidate or {}
         if self.phase == "PLAN":
@@ -581,25 +609,25 @@ class SearchVideoRecorder:
         else:
             lines.extend(
                 [
-                    "No RGB frame is available for this phase.",
-                    "The map, planning panel, memory panel and timeline remain valid.",
+                    f"observed_views: {self.last_view_count}/{self.expected_observation_views}",
+                    f"detections_in_phase: {len(self.detections)}",
                     f"trajectory_points: {len(self.trajectory)}",
                     f"candidates: {len(self.candidates)}",
                     f"memory_events: {len(self.memory_events)}",
                 ]
             )
-        y = ry + 92
+        y = ry + 150
         for line in lines:
             cv2.putText(canvas, str(line)[:110], (rx + 28, y), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (38, 52, 70), 1, cv2.LINE_AA)
             y += 30
             if y > ry + rh - 24:
                 break
         if self.last_rgb is not None and self.phase in {"PLAN", "FEEDBACK", "SUMMARY"}:
-            inset_w = min(320, max(180, rw // 4))
-            inset_h = min(220, max(130, rh // 4))
+            inset_w = min(380, max(220, rw // 3))
+            inset_h = min(260, max(150, rh // 3))
             inset = self._fit(self.last_rgb, inset_w, inset_h, background=(22, 26, 32))
             ix = rx + rw - inset_w - 20
-            iy = ry + 20
+            iy = ry + rh - inset_h - 24
             canvas[iy : iy + inset_h, ix : ix + inset_w] = inset
             cv2.rectangle(canvas, (ix, iy), (ix + inset_w, iy + inset_h), (80, 92, 110), 1)
             cv2.putText(canvas, "last RGB", (ix + 8, iy + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (245, 250, 255), 1, cv2.LINE_AA)
@@ -613,21 +641,37 @@ class SearchVideoRecorder:
         if "OBSERVE" in self.phase and self.include_observation_views:
             source_phase = self.phase.replace("_SUMMARY", "")
             views = self.observation_views.get((source_phase, int(self.round_index or 0)), {})
-            items = [views[k] for k in sorted(views)]
-            if items:
-                cols = 2 if len(items) <= 4 else int(math.ceil(math.sqrt(len(items))))
-                rows = int(math.ceil(len(items) / cols))
+            if views:
+                expected = max(self.expected_observation_views, max(views) + 1)
+                cols = 2 if expected <= 4 else int(math.ceil(math.sqrt(expected)))
+                rows = int(math.ceil(expected / cols))
                 gap = 8
                 cell_w = max(1, (rw - gap * (cols - 1)) // cols)
                 cell_h = max(1, (rh - gap * (rows - 1)) // rows)
-                for idx, item in enumerate(items):
+                for idx in range(expected):
                     cx = rx + (idx % cols) * (cell_w + gap)
                     cy = ry + (idx // cols) * (cell_h + gap)
-                    img = self._draw_detection_boxes(item.get("rgb"), item.get("detections", []))
-                    canvas[cy : cy + cell_h, cx : cx + cell_w] = self._fit(img, cell_w, cell_h)
-                    pose = item.get("pose")
-                    yaw = getattr(pose, "yaw", "")
-                    label = f"view={item.get('view_index')} yaw={_fmt(yaw, 1)} det={len(item.get('detections', []))}"
+                    item = views.get(idx)
+                    if item:
+                        img = self._draw_detection_boxes(item.get("rgb"), item.get("detections", []))
+                        canvas[cy : cy + cell_h, cx : cx + cell_w] = self._fit(img, cell_w, cell_h)
+                        pose = item.get("pose")
+                        yaw = getattr(pose, "yaw", "")
+                        label = f"view={item.get('view_index')} yaw={_fmt(yaw, 1)} det={len(item.get('detections', []))}"
+                    else:
+                        cv2.rectangle(canvas, (cx, cy), (cx + cell_w, cy + cell_h), (34, 39, 48), -1)
+                        cv2.rectangle(canvas, (cx, cy), (cx + cell_w, cy + cell_h), (80, 90, 105), 1)
+                        label = f"view={idx} pending"
+                        cv2.putText(
+                            canvas,
+                            "waiting for observation",
+                            (cx + max(10, cell_w // 10), cy + max(34, cell_h // 2)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.58,
+                            (185, 195, 210),
+                            1,
+                            cv2.LINE_AA,
+                        )
                     cv2.rectangle(canvas, (cx, cy), (cx + min(cell_w, 260), cy + 22), (0, 0, 0), -1)
                     cv2.putText(canvas, label, (cx + 6, cy + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (245, 250, 255), 1, cv2.LINE_AA)
                 return

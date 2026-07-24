@@ -1583,7 +1583,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--video-height", type=int, default=1080)
     parser.add_argument(
         "--video-include-observation-views",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Show all observation views in a same-frame mosaic during PRE/POST observe phases.",
     )
     parser.add_argument("--video-max-candidate-k", type=int, default=5)
