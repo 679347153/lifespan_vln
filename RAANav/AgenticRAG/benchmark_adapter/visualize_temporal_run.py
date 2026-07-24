@@ -160,6 +160,152 @@ def _group_by(records: Iterable[Dict[str, Any]], key: str) -> Dict[str, List[Dic
     return dict(out)
 
 
+def _compact_pose_dict(value: Any) -> Optional[Dict[str, float]]:
+    if not isinstance(value, dict):
+        return None
+    x = _safe_float(value.get("x"))
+    z = _safe_float(value.get("z"))
+    if x is None or z is None:
+        return None
+    out = {"x": x, "z": z}
+    y = _safe_float(value.get("y"))
+    yaw = _safe_float(value.get("yaw"))
+    if y is not None:
+        out["y"] = y
+    if yaw is not None:
+        out["yaw"] = yaw
+    return out
+
+
+def _compact_candidate_item(item: Any) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "obj_id": item.get("obj_id"),
+        "label": sanitize_detection_label(item.get("label")),
+        "world_x": item.get("world_x"),
+        "world_z": item.get("world_z"),
+        "pos_2d": item.get("pos_2d"),
+        "S_final": item.get("S_final"),
+        "score": item.get("score"),
+        "S_rag": item.get("S_rag"),
+        "S_agent": item.get("S_agent"),
+        "R_sim": item.get("R_sim"),
+        "sim_backend": item.get("sim_backend"),
+        "current_room_id": item.get("current_room_id"),
+        "room_id": item.get("room_id"),
+        "exist_prob": item.get("exist_prob"),
+    }
+
+
+def _compact_nav_safety(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "requested_pose": _compact_pose_dict(value.get("requested_pose")),
+        "snapped_pose": _compact_pose_dict(value.get("snapped_pose")),
+        "safe_waypoint": _compact_pose_dict(value.get("safe_waypoint")),
+        "snap_distance": value.get("snap_distance"),
+        "geodesic_distance": value.get("geodesic_distance"),
+        "valid": value.get("valid"),
+        "reject_reason": value.get("reject_reason"),
+        "clipped": value.get("clipped"),
+        "backend": value.get("backend"),
+    }
+
+
+def _compact_candidate_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    nav_safety = _compact_nav_safety(record.get("nav_safety"))
+    return {
+        "episode_id": record.get("episode_id"),
+        "subtask_id": record.get("subtask_id"),
+        "scene_name": record.get("scene_name"),
+        "layout_id": record.get("layout_id"),
+        "state_index": record.get("state_index"),
+        "round": record.get("round"),
+        "fallback_reason": record.get("fallback_reason"),
+        "selected_candidate": _compact_candidate_item(record.get("selected_candidate")),
+        "top_candidates": [_compact_candidate_item(item) for item in (record.get("top_candidates") or [])[:10]],
+        "planning_mode": record.get("planning_mode"),
+        "selected_room_id": record.get("selected_room_id"),
+        "room_scores_top": record.get("room_scores_top"),
+        "room_score_terms": record.get("room_score_terms"),
+        "selected_pose_source": record.get("selected_pose_source"),
+        "room_switch_reason": record.get("room_switch_reason"),
+        "target_position": record.get("target_position"),
+        "success_radius": record.get("success_radius"),
+        "planned_pose": _compact_pose_dict(record.get("planned_pose")),
+        "final_pose": _compact_pose_dict(record.get("final_pose")),
+        "path_length": record.get("path_length"),
+        "micro_steps": record.get("micro_steps"),
+        "nav_safety": nav_safety,
+        "requested_pose": _compact_pose_dict(record.get("requested_pose")) or nav_safety.get("requested_pose"),
+        "snapped_pose": _compact_pose_dict(record.get("snapped_pose")) or nav_safety.get("snapped_pose"),
+        "safe_waypoint": _compact_pose_dict(record.get("safe_waypoint")) or nav_safety.get("safe_waypoint"),
+        "snap_distance": record.get("snap_distance") if record.get("snap_distance") is not None else nav_safety.get("snap_distance"),
+        "geodesic_distance": record.get("geodesic_distance") if record.get("geodesic_distance") is not None else nav_safety.get("geodesic_distance"),
+        "nav_reject_reason": record.get("nav_reject_reason") or nav_safety.get("reject_reason"),
+        "nav_backend": record.get("nav_backend") or nav_safety.get("backend"),
+        "nav_clipped": record.get("nav_clipped") if record.get("nav_clipped") is not None else nav_safety.get("clipped"),
+        "adjacent_nav_distances": (record.get("adjacent_nav_distances") or [])[:40],
+        "max_adjacent_nav_distance": record.get("max_adjacent_nav_distance"),
+        "video_path": record.get("video_path"),
+        "video_frame_start": record.get("video_frame_start"),
+        "video_frame_end": record.get("video_frame_end"),
+    }
+
+
+def _compact_observation_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    out = {
+        "scene_name": record.get("scene_name"),
+        "layout_id": record.get("layout_id"),
+        "state_index": record.get("state_index"),
+        "step": record.get("step"),
+        "view_index": record.get("view_index"),
+        "label": sanitize_detection_label(record.get("label")),
+        "raw_label": record.get("raw_label"),
+        "score": record.get("score"),
+        "pos_2d": record.get("pos_2d"),
+        "pos_3d": record.get("pos_3d"),
+        "position_confidence": record.get("position_confidence"),
+        "position_source": record.get("position_source"),
+    }
+    return out
+
+
+def _compact_memory_update(record: Dict[str, Any]) -> Dict[str, Any]:
+    details = record.get("details") if isinstance(record.get("details"), dict) else {}
+    return {
+        "event": record.get("event"),
+        "track_id": record.get("track_id"),
+        "label": record.get("label"),
+        "scene_name": record.get("scene_name"),
+        "episode_id": record.get("episode_id"),
+        "subtask_id": record.get("subtask_id"),
+        "round": record.get("round"),
+        "observation_phase": record.get("observation_phase"),
+        "layout_id": record.get("layout_id"),
+        "state_index": record.get("state_index"),
+        "step": record.get("step"),
+        "details": {
+            "room_id": details.get("room_id") or details.get("current_room_id"),
+            "previous_room_id": details.get("previous_room_id"),
+            "current_room_id": details.get("current_room_id"),
+            "pos_2d": details.get("pos_2d"),
+            "raw_pos_2d": details.get("raw_pos_2d"),
+            "smoothed_pos_2d": details.get("smoothed_pos_2d"),
+            "position_confidence": details.get("position_confidence"),
+            "position_source": details.get("position_source"),
+            "consolidated_detection_count": details.get("consolidated_detection_count"),
+            "merge_reason": details.get("merge_reason"),
+            "merged_track_id": details.get("merged_track_id"),
+            "duplicate_compaction": details.get("duplicate_compaction"),
+            "room_belief_before": details.get("room_belief_before"),
+            "room_belief_after": details.get("room_belief_after"),
+        },
+    }
+
+
 def _clean_observation_records(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for record in records:
@@ -171,7 +317,7 @@ def _clean_observation_records(records: Iterable[Dict[str, Any]]) -> List[Dict[s
         if raw_label and raw_label != label:
             clean["raw_label"] = raw_label
         clean["label"] = label
-        out.append(clean)
+        out.append(_compact_observation_record(clean))
     return out
 
 
@@ -245,7 +391,14 @@ def _scene_memory_payload(output_dir: Path) -> Dict[str, Any]:
     }
 
 
-def _scene_geometry_payload(output_dir: Path) -> Dict[str, Any]:
+def _scene_geometry_payload(
+    output_dir: Path,
+    *,
+    max_navmesh_contours: int = 12000,
+    max_navigable_points: int = 1200,
+    max_layout_objects: int = 400,
+    max_semantic_regions: int = 120,
+) -> Dict[str, Any]:
     geom_root = output_dir / "scene_geometry"
     scenes: Dict[str, Any] = {}
     if not geom_root.exists():
@@ -260,12 +413,22 @@ def _scene_geometry_payload(output_dir: Path) -> Dict[str, Any]:
             "source": payload.get("source") or {},
             "bounds": payload.get("bounds") or {},
             "grid_resolution": payload.get("grid_resolution"),
-            "navmesh_contours": payload.get("navmesh_contours") or [],
-            "navigable_points": payload.get("navigable_points") or [],
-            "semantic_regions": payload.get("semantic_regions") or [],
-            "layout_objects": payload.get("layout_objects") or [],
+            "navmesh_contours": (payload.get("navmesh_contours") or [])[: max(0, int(max_navmesh_contours))],
+            "navigable_points": (payload.get("navigable_points") or [])[: max(0, int(max_navigable_points))],
+            "semantic_regions": (payload.get("semantic_regions") or [])[: max(0, int(max_semantic_regions))],
+            "layout_objects": (payload.get("layout_objects") or [])[: max(0, int(max_layout_objects))],
             "room_overlays": payload.get("room_overlays") or [],
             "notes": payload.get("notes") or [],
+            "truncated": {
+                "max_navmesh_contours": max_navmesh_contours,
+                "max_navigable_points": max_navigable_points,
+                "max_layout_objects": max_layout_objects,
+                "max_semantic_regions": max_semantic_regions,
+                "original_navmesh_contours": len(payload.get("navmesh_contours") or []),
+                "original_navigable_points": len(payload.get("navigable_points") or []),
+                "original_layout_objects": len(payload.get("layout_objects") or []),
+                "original_semantic_regions": len(payload.get("semantic_regions") or []),
+            },
         }
     return {"scenes": scenes, "scene_count": len(scenes)}
 
@@ -320,15 +483,24 @@ def _memory_timeline_payload(memory_updates: List[Dict[str, Any]]) -> Dict[str, 
     }
 
 
-def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> Dict[str, Any]:
+def build_visual_payload(
+    output_dir: Path,
+    *,
+    max_observations: int = 12000,
+    max_navmesh_contours: int = 12000,
+    max_navigable_points: int = 1200,
+    max_layout_objects: int = 400,
+    max_semantic_regions: int = 120,
+) -> Dict[str, Any]:
     output_dir = as_path(output_dir)
     run_rows = _read_jsonl(output_dir / "run.jsonl")
     diagnostics = _read_jsonl(output_dir / "memory_diagnostics.jsonl")
-    candidates = _read_jsonl(output_dir / "candidate_traces.jsonl")
+    candidates = [_compact_candidate_record(row) for row in _read_jsonl(output_dir / "candidate_traces.jsonl")]
     observations = _clean_observation_records(
         _read_jsonl(output_dir / "observation_traces.jsonl", max_records=max_observations)
     )
-    memory_updates = _read_jsonl(output_dir / "memory_updates.jsonl")
+    memory_updates_raw = _read_jsonl(output_dir / "memory_updates.jsonl")
+    memory_updates = [_compact_memory_update(row) for row in memory_updates_raw]
     negative_feedback = _read_jsonl(output_dir / "negative_feedback.jsonl")
     layout_transitions = _read_jsonl(output_dir / "layout_transitions.jsonl")
     summary = _read_json_optional(output_dir / "summary.json") or {}
@@ -337,7 +509,13 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
     by_task_type = _read_json_optional(output_dir / "by_task_type.json") or {}
     diagnosis = diagnose(output_dir)
     scene_memory = _scene_memory_payload(output_dir)
-    scene_geometry = _scene_geometry_payload(output_dir)
+    scene_geometry = _scene_geometry_payload(
+        output_dir,
+        max_navmesh_contours=max_navmesh_contours,
+        max_navigable_points=max_navigable_points,
+        max_layout_objects=max_layout_objects,
+        max_semantic_regions=max_semantic_regions,
+    )
     memory_timeline = _memory_timeline_payload(memory_updates)
 
     episode_rows = []
@@ -399,6 +577,12 @@ def build_visual_payload(output_dir: Path, *, max_observations: int = 20000) -> 
         "truncated": {
             "observations_max_records": max_observations,
             "observations_loaded": len(observations),
+            "candidate_records_compacted": True,
+            "memory_updates_compacted": True,
+            "max_navmesh_contours": max_navmesh_contours,
+            "max_navigable_points": max_navigable_points,
+            "max_layout_objects": max_layout_objects,
+            "max_semantic_regions": max_semantic_regions,
         },
     }
     return payload
@@ -789,7 +973,7 @@ def _html_template(payload_json: str, title: str) -> str:
 </html>"""
 
 
-def _html_template(payload_json: str, title: str) -> str:
+def _legacy_html_template_unused(payload_json: str, title: str) -> str:
     safe_title = html.escape(title)
     template = """<!doctype html>
 <html lang="zh-CN">
@@ -955,14 +1139,25 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, help="Directory produced by run_temporal_habitat_loop.")
     parser.add_argument("--html", default="", help="Output HTML path. Defaults to <output-dir>/visual_debug/index.html.")
     parser.add_argument("--write-json", default="", help="Optional compact JSON payload path.")
-    parser.add_argument("--max-observations", type=int, default=20000, help="Maximum observation records embedded in the HTML.")
+    parser.add_argument("--max-observations", type=int, default=12000, help="Maximum observation records embedded in the HTML.")
+    parser.add_argument("--max-navmesh-contours", type=int, default=12000, help="Maximum navmesh contour segments embedded in the HTML payload.")
+    parser.add_argument("--max-navigable-points", type=int, default=1200, help="Maximum sampled navigable points embedded in the HTML payload.")
+    parser.add_argument("--max-layout-objects", type=int, default=400, help="Maximum layout objects embedded in the HTML payload.")
+    parser.add_argument("--max-semantic-regions", type=int, default=120, help="Maximum semantic regions embedded in the HTML payload.")
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parse_args(argv)
     output_dir = as_path(args.output_dir)
-    payload = build_visual_payload(output_dir, max_observations=int(args.max_observations))
+    payload = build_visual_payload(
+        output_dir,
+        max_observations=int(args.max_observations),
+        max_navmesh_contours=int(args.max_navmesh_contours),
+        max_navigable_points=int(args.max_navigable_points),
+        max_layout_objects=int(args.max_layout_objects),
+        max_semantic_regions=int(args.max_semantic_regions),
+    )
     html_path = as_path(args.html) if args.html else output_dir / "visual_debug" / "index.html"
     write_visualization(payload, html_path)
     json_path = as_path(args.write_json) if args.write_json else output_dir / "visual_debug" / "visual_payload.json"
