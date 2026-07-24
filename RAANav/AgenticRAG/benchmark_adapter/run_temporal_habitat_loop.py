@@ -700,6 +700,11 @@ def run_episode_temporal(
                     height=int(args.video_height),
                     max_candidate_k=int(args.video_max_candidate_k),
                     include_observation_views=bool(args.video_include_observation_views),
+                    expected_observation_views=int(args.n_views),
+                    scene_geometry_path=as_path(args.output_dir) / "scene_geometry" / f"{episode.scene_name}.json",
+                    video_layout=str(args.video_layout),
+                    save_frames=bool(args.video_save_frames),
+                    map_history=str(args.video_map_history),
                 )
 
         def _video_frame_callback(payload: Dict[str, Any]) -> None:
@@ -727,6 +732,7 @@ def run_episode_temporal(
         for round_idx in range(max(1, int(args.max_rounds))):
             if subtask_steps >= int(args.max_steps_per_subtask):
                 break
+            round_video_start = recorder.frame_count if recorder is not None else None
             text_prompt = _prompt_for_query(query, global_labels, memory, int(args.max_detect_labels))
             obs = loop.observe(
                 n_views=args.n_views,
@@ -761,6 +767,8 @@ def run_episode_temporal(
                 )
                 memory_events.append(event_record)
                 pre_memory_events.append(event_record)
+            if recorder is not None:
+                recorder.record_observation_summary(phase="PRE_OBSERVE", round_index=round_idx)
             obs_target_diag = _target_detection_diagnostics(
                 obs.detections,
                 query,
@@ -831,7 +839,6 @@ def run_episode_temporal(
                 )
             if selected_candidate_record is None and last_candidates:
                 selected_candidate_record = last_candidates[0]
-            round_video_start = recorder.frame_count if recorder is not None else None
             if recorder is not None:
                 recorder.record_planning_state(
                     candidates=last_candidates,
@@ -926,6 +933,8 @@ def run_episode_temporal(
                 )
                 memory_events.append(event_record)
                 post_memory_events.append(event_record)
+            if recorder is not None:
+                recorder.record_observation_summary(phase="POST_OBSERVE", round_index=round_idx)
             post_target_diag = _target_detection_diagnostics(
                 post_obs.detections,
                 query,
@@ -936,6 +945,8 @@ def run_episode_temporal(
             target_detection_summary = _merge_target_detection_diagnostics(target_detection_summary, post_target_diag)
             if post_target_diag.get("target_detection_confirmed"):
                 perception_found = True
+                if recorder is not None and candidate_records:
+                    candidate_records[-1]["video_frame_end"] = max(0, recorder.frame_count - 1)
                 break
             if selected_candidate is not None:
                 event = memory.record_negative_feedback(
@@ -964,6 +975,8 @@ def run_episode_temporal(
             if recorder is not None:
                 new_feedback = feedback_records[-1:] if feedback_records else []
                 recorder.record_feedback_state(feedback=new_feedback, memory_events=post_memory_events, phase="FEEDBACK")
+                if candidate_records:
+                    candidate_records[-1]["video_frame_end"] = max(0, recorder.frame_count - 1)
 
         final_dist = _trace_distance(final_pose, subtask)
         benchmark_success = final_dist <= float(subtask.success_radius)
@@ -1118,10 +1131,13 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         video_output_dir = getattr(args, "video_output_dir", "")
         args.video_output_dir_resolved = str(as_path(video_output_dir) if video_output_dir else output_dir / "videos")
         args.video_fps = float(getattr(args, "video_fps", 8.0))
-        args.video_width = int(getattr(args, "video_width", 1600))
-        args.video_height = int(getattr(args, "video_height", 900))
+        args.video_width = int(getattr(args, "video_width", 1920))
+        args.video_height = int(getattr(args, "video_height", 1080))
         args.video_include_observation_views = bool(getattr(args, "video_include_observation_views", False))
         args.video_max_candidate_k = int(getattr(args, "video_max_candidate_k", 5))
+        args.video_layout = str(getattr(args, "video_layout", "dashboard") or "dashboard")
+        args.video_save_frames = bool(getattr(args, "video_save_frames", False))
+        args.video_map_history = str(getattr(args, "video_map_history", "recent") or "recent")
     else:
         args.video_selector = None
         args.video_output_dir_resolved = ""
@@ -1461,10 +1477,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Directory for search videos. Defaults to <output-dir>/videos.",
     )
     parser.add_argument("--video-fps", type=float, default=8.0)
-    parser.add_argument("--video-width", type=int, default=1600)
-    parser.add_argument("--video-height", type=int, default=900)
-    parser.add_argument("--video-include-observation-views", action="store_true")
+    parser.add_argument("--video-width", type=int, default=1920)
+    parser.add_argument("--video-height", type=int, default=1080)
+    parser.add_argument(
+        "--video-include-observation-views",
+        action="store_true",
+        help="Show all observation views in a same-frame mosaic during PRE/POST observe phases.",
+    )
     parser.add_argument("--video-max-candidate-k", type=int, default=5)
+    parser.add_argument("--video-layout", choices=("dashboard", "compact"), default="dashboard")
+    parser.add_argument("--video-save-frames", action="store_true", help="Save rendered dashboard frames as PNGs in addition to MP4.")
+    parser.add_argument(
+        "--video-map-history",
+        choices=("full", "round", "recent"),
+        default="recent",
+        help="Control how much trajectory/memory history is shown in the video map.",
+    )
     parser.add_argument(
         "--target-name-map",
         default=None,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -23,12 +24,6 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _pose_dict(pose: Optional[Pose]) -> Dict[str, float]:
-    if pose is None:
-        return {}
-    return {"x": float(pose.x), "y": float(pose.y), "z": float(pose.z), "yaw": float(pose.yaw)}
-
-
 def _candidate_xz(candidate: Dict[str, Any]) -> Optional[Tuple[float, float]]:
     if "world_x" in candidate and "world_z" in candidate:
         return _safe_float(candidate.get("world_x")), _safe_float(candidate.get("world_z"))
@@ -45,6 +40,20 @@ def _event_xz(event: Dict[str, Any]) -> Optional[Tuple[float, float]]:
         if isinstance(pos, list) and len(pos) >= 2:
             return _safe_float(pos[0]), _safe_float(pos[1])
     return None
+
+
+def _short(value: Any, max_len: int = 36) -> str:
+    text = str(value if value is not None else "")
+    return text if len(text) <= max_len else text[: max_len - 1] + "~"
+
+
+def _fmt(value: Any, digits: int = 2) -> str:
+    if value is None or value == "":
+        return ""
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return _short(value, 20)
 
 
 @dataclass
@@ -96,24 +105,40 @@ class SearchVideoRecorder:
         output_dir: Path,
         context: Dict[str, Any],
         fps: float = 8.0,
-        width: int = 1600,
-        height: int = 900,
+        width: int = 1920,
+        height: int = 1080,
         max_candidate_k: int = 5,
         include_observation_views: bool = False,
+        expected_observation_views: int = 4,
+        scene_geometry_path: Optional[Path] = None,
+        scene_geometry: Optional[Dict[str, Any]] = None,
+        video_layout: str = "dashboard",
+        save_frames: bool = False,
+        map_history: str = "recent",
     ) -> None:
         if cv2 is None:
             raise RuntimeError("OpenCV is required for --record-search-video, but cv2 could not be imported.")
         self.output_dir = Path(output_dir)
         self.context = dict(context)
         self.fps = float(fps)
-        self.width = max(1600, int(width))
-        self.height = max(900, int(height))
+        self.width = max(1280, int(width))
+        self.height = max(720, int(height))
         self.max_candidate_k = int(max_candidate_k)
         self.include_observation_views = bool(include_observation_views)
+        self.expected_observation_views = max(1, int(expected_observation_views))
+        self.video_layout = str(video_layout or "dashboard")
+        self.save_frames = bool(save_frames)
+        self.map_history = str(map_history or "recent")
         self.video_path = self.output_dir / "search.mp4"
         self.frames_dir = self.output_dir / "frames"
         self.manifest_path = self.output_dir / "video_manifest.json"
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.save_frames:
+            self.frames_dir.mkdir(parents=True, exist_ok=True)
+
+        self.scene_geometry_path = Path(scene_geometry_path) if scene_geometry_path else None
+        self.scene_geometry = dict(scene_geometry) if isinstance(scene_geometry, dict) else self._load_geometry(self.scene_geometry_path)
+        self.geometry_loaded = bool(self.scene_geometry)
         self.frame_count = 0
         self.phase = "INIT"
         self.round_index: Optional[int] = None
@@ -127,7 +152,10 @@ class SearchVideoRecorder:
         self.memory_events: List[Dict[str, Any]] = []
         self.feedback_events: List[Dict[str, Any]] = []
         self.detections: List[Dict[str, Any]] = []
+        self.observation_views: Dict[Tuple[str, int], Dict[int, Dict[str, Any]]] = {}
         self.selected_rounds: List[int] = []
+        self.recorded_phases: List[str] = []
+        self.recorded_views_per_round: Dict[str, List[int]] = {}
         self._writer = cv2.VideoWriter(
             str(self.video_path),
             cv2.VideoWriter_fourcc(*"mp4v"),
@@ -147,15 +175,40 @@ class SearchVideoRecorder:
         phase: str,
         round_index: Optional[int],
     ) -> None:
-        if not self.include_observation_views and int(view_index) != 0:
-            return
-        self.phase = str(phase)
-        self.round_index = round_index
-        self.last_rgb = self._rgb_to_bgr(rgb)
+        view_idx = int(view_index)
+        round_idx = int(round_index or 0)
+        phase_name = str(phase or "OBSERVE")
+        bgr = self._rgb_to_bgr(rgb)
+        self.last_rgb = bgr
         self.current_pose = pose
-        self.detections = [dict(item) for item in detections[:20]]
         self._add_pose(pose)
-        self._write_frame()
+        self.observation_views.setdefault((phase_name, round_idx), {})[view_idx] = {
+            "rgb": bgr,
+            "detections": [dict(item) for item in detections[:30]],
+            "pose": pose,
+            "view_index": view_idx,
+        }
+        view_key = f"{round_idx}:{phase_name}"
+        views = set(self.recorded_views_per_round.get(view_key, []))
+        views.add(view_idx)
+        self.recorded_views_per_round[view_key] = sorted(views)
+        if not self.include_observation_views and view_idx != 0:
+            return
+        self.phase = phase_name
+        self.round_index = round_idx
+        self.detections = [dict(item) for item in detections[:20]]
+        if not self.include_observation_views:
+            self._write_frame()
+
+    def record_observation_summary(self, *, phase: str, round_index: int, repeat: int = 2) -> None:
+        phase_name = str(phase or "OBSERVE")
+        self.phase = f"{phase_name}_SUMMARY"
+        self.round_index = int(round_index)
+        views = self.observation_views.get((phase_name, int(round_index)), {})
+        self.detections = []
+        for item in views.values():
+            self.detections.extend(dict(det) for det in item.get("detections", [])[:20])
+        self._write_frame(repeat=repeat)
 
     def record_planning_state(
         self,
@@ -182,9 +235,9 @@ class SearchVideoRecorder:
         self.phase = "MOVE"
         self.last_rgb = self._rgb_to_bgr(rgb)
         self.current_pose = pose
-        self.trajectory = [(_safe_float(item.get("x")), _safe_float(item.get("z"))) for item in path_so_far if isinstance(item, dict)]
-        if not self.trajectory:
-            self._add_pose(pose)
+        for item in path_so_far:
+            if isinstance(item, dict):
+                self._add_xz(_safe_float(item.get("x")), _safe_float(item.get("z")))
         self._write_frame()
 
     def record_feedback_state(
@@ -210,15 +263,34 @@ class SearchVideoRecorder:
             "frame_count": int(self.frame_count),
             "fps": float(self.fps),
             "selected_rounds": sorted(set(self.selected_rounds)),
+            "recorded_phases": list(self.recorded_phases),
+            "recorded_views_per_round": self.recorded_views_per_round,
+            "geometry_loaded": bool(self.geometry_loaded),
+            "geometry_path": str(self.scene_geometry_path) if self.scene_geometry_path else None,
+            "layout_mode": self.video_layout,
+            "map_history": self.map_history,
         }
         self.manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return manifest
 
+    def _load_geometry(self, path: Optional[Path]) -> Dict[str, Any]:
+        if path is None or not Path(path).exists():
+            return {}
+        try:
+            with Path(path).open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
     def _add_pose(self, pose: Pose) -> None:
-        xz = (float(pose.x), float(pose.z))
-        if not self.trajectory or self.trajectory[-1] != xz:
+        self._add_xz(float(pose.x), float(pose.z))
+
+    def _add_xz(self, x: float, z: float) -> None:
+        xz = (float(x), float(z))
+        if not self.trajectory or math.hypot(self.trajectory[-1][0] - xz[0], self.trajectory[-1][1] - xz[1]) > 1e-4:
             self.trajectory.append(xz)
-            self.trajectory = self.trajectory[-400:]
+            self.trajectory = self.trajectory[-600:]
 
     def _rgb_to_bgr(self, rgb: np.ndarray) -> np.ndarray:
         image = np.asarray(rgb)
@@ -249,13 +321,14 @@ class SearchVideoRecorder:
         lines: Iterable[str],
         origin: Tuple[int, int],
         *,
-        scale: float = 0.45,
+        scale: float = 0.44,
         color: Tuple[int, int, int] = (230, 235, 240),
         step: int = 24,
+        max_chars: int = 78,
     ) -> None:
         x, y = origin
         for line in lines:
-            cv2.putText(canvas, str(line)[:80], (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+            cv2.putText(canvas, str(line)[:max_chars], (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
             y += step
 
     def _project(self, x: float, z: float, bounds: Tuple[float, float, float, float], rect: Tuple[int, int, int, int]) -> Tuple[int, int]:
@@ -266,7 +339,15 @@ class SearchVideoRecorder:
         return px, py
 
     def _map_bounds(self) -> Tuple[float, float, float, float]:
-        points: List[Tuple[float, float]] = list(self.trajectory)
+        bounds = self.scene_geometry.get("bounds") if isinstance(self.scene_geometry, dict) else None
+        if isinstance(bounds, dict) and all(k in bounds for k in ("min_x", "max_x", "min_z", "max_z")):
+            return (
+                _safe_float(bounds.get("min_x")) - 0.5,
+                _safe_float(bounds.get("max_x")) + 0.5,
+                _safe_float(bounds.get("min_z")) - 0.5,
+                _safe_float(bounds.get("max_z")) + 0.5,
+            )
+        points: List[Tuple[float, float]] = self._history_points()
         target = self.context.get("target_position")
         if isinstance(target, list) and len(target) >= 2:
             points.append((_safe_float(target[0]), _safe_float(target[1])))
@@ -276,7 +357,7 @@ class SearchVideoRecorder:
             xz = _candidate_xz(cand)
             if xz:
                 points.append(xz)
-        for event in self.memory_events[-80:]:
+        for event in self._memory_events_for_map():
             xz = _event_xz(event)
             if xz:
                 points.append(xz)
@@ -286,44 +367,110 @@ class SearchVideoRecorder:
         zs = [p[1] for p in points]
         return min(xs) - 1.0, max(xs) + 1.0, min(zs) - 1.0, max(zs) + 1.0
 
+    def _history_points(self) -> List[Tuple[float, float]]:
+        if self.map_history == "full":
+            return list(self.trajectory)
+        if self.map_history == "round":
+            return list(self.trajectory[-80:])
+        return list(self.trajectory[-200:])
+
+    def _memory_events_for_map(self) -> List[Dict[str, Any]]:
+        if self.map_history == "full":
+            return list(self.memory_events[-400:])
+        if self.map_history == "round":
+            current_round = self.round_index
+            return [e for e in self.memory_events[-200:] if e.get("round") == current_round]
+        return list(self.memory_events[-100:])
+
+    def _draw_geometry(self, canvas: np.ndarray, rect: Tuple[int, int, int, int], bounds: Tuple[float, float, float, float]) -> None:
+        if not self.scene_geometry:
+            return
+        contours = self.scene_geometry.get("navmesh_contours") or []
+        nav_pts = self.scene_geometry.get("navigable_points") or []
+        regions = self.scene_geometry.get("semantic_regions") or []
+        layout_objects = self.scene_geometry.get("layout_objects") or []
+        for point in nav_pts[:1600]:
+            if isinstance(point, list) and len(point) >= 3:
+                px, py = self._project(_safe_float(point[0]), _safe_float(point[2]), bounds, rect)
+                cv2.circle(canvas, (px, py), 1, (205, 213, 224), -1)
+        for seg in contours[:16000]:
+            if isinstance(seg, list) and len(seg) >= 2 and len(seg[0]) >= 2 and len(seg[1]) >= 2:
+                p0 = self._project(_safe_float(seg[0][0]), _safe_float(seg[0][1]), bounds, rect)
+                p1 = self._project(_safe_float(seg[1][0]), _safe_float(seg[1][1]), bounds, rect)
+                cv2.line(canvas, p0, p1, (150, 163, 182), 1, cv2.LINE_AA)
+        for region in regions[:80]:
+            polygon = region.get("polygon") if isinstance(region, dict) else None
+            if not isinstance(polygon, list) or len(polygon) < 3:
+                continue
+            pts = np.asarray([self._project(_safe_float(p[0]), _safe_float(p[1]), bounds, rect) for p in polygon if isinstance(p, list) and len(p) >= 2], dtype=np.int32)
+            if len(pts) >= 3:
+                overlay = canvas.copy()
+                cv2.fillPoly(overlay, [pts], (215, 232, 255))
+                cv2.addWeighted(overlay, 0.18, canvas, 0.82, 0, canvas)
+                cv2.polylines(canvas, [pts], True, (80, 130, 210), 1, cv2.LINE_AA)
+            center = region.get("center") if isinstance(region, dict) else None
+            if isinstance(center, list) and len(center) >= 3:
+                px, py = self._project(_safe_float(center[0]), _safe_float(center[2]), bounds, rect)
+                cv2.putText(canvas, f"R{region.get('region_id', '')}", (px, py), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (55, 95, 170), 1, cv2.LINE_AA)
+        for obj in layout_objects[:400]:
+            pos = obj.get("position") if isinstance(obj, dict) else None
+            if isinstance(pos, list) and len(pos) >= 3:
+                px, py = self._project(_safe_float(pos[0]), _safe_float(pos[2]), bounds, rect)
+                cv2.rectangle(canvas, (px - 2, py - 2), (px + 2, py + 2), (120, 115, 30), -1)
+
     def _draw_map(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
         rx, ry, rw, rh = rect
-        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (245, 248, 252), -1)
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (247, 250, 253), -1)
         cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (210, 218, 228), 1)
         bounds = self._map_bounds()
+        self._draw_geometry(canvas, rect, bounds)
         target = self.context.get("target_position")
         if isinstance(target, list) and len(target) >= 2:
             px, py = self._project(_safe_float(target[0]), _safe_float(target[1]), bounds, rect)
-            cv2.circle(canvas, (px, py), 7, (40, 40, 230), -1, cv2.LINE_AA)
+            cv2.circle(canvas, (px, py), 8, (40, 40, 230), -1, cv2.LINE_AA)
             cv2.putText(canvas, "target", (px + 8, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (40, 40, 180), 1, cv2.LINE_AA)
-        if len(self.trajectory) >= 2:
-            pts = np.asarray([self._project(x, z, bounds, rect) for x, z in self.trajectory], dtype=np.int32)
-            cv2.polylines(canvas, [pts], False, (20, 24, 32), 2, cv2.LINE_AA)
-            cv2.circle(canvas, tuple(pts[-1]), 5, (20, 24, 32), -1, cv2.LINE_AA)
+        traj = self._history_points()
+        if len(traj) >= 2:
+            pts = [self._project(x, z, bounds, rect) for x, z in traj]
+            cv2.polylines(canvas, [np.asarray(pts, dtype=np.int32)], False, (20, 24, 32), 2, cv2.LINE_AA)
+            for p0, p1 in zip(pts[:-1], pts[1:]):
+                if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 14:
+                    continue
+                angle = math.atan2(p1[1] - p0[1], p1[0] - p0[0])
+                tip = p1
+                a1 = (int(tip[0] - 8 * math.cos(angle - 0.45)), int(tip[1] - 8 * math.sin(angle - 0.45)))
+                a2 = (int(tip[0] - 8 * math.cos(angle + 0.45)), int(tip[1] - 8 * math.sin(angle + 0.45)))
+                cv2.line(canvas, tip, a1, (20, 24, 32), 1, cv2.LINE_AA)
+                cv2.line(canvas, tip, a2, (20, 24, 32), 1, cv2.LINE_AA)
+            cv2.circle(canvas, pts[-1], 5, (20, 24, 32), -1, cv2.LINE_AA)
         for idx, cand in enumerate(self.candidates[: self.max_candidate_k]):
             xz = _candidate_xz(cand)
             if not xz:
                 continue
             px, py = self._project(xz[0], xz[1], bounds, rect)
-            color = (80, 170, 70) if idx else (255, 120, 30)
+            color = (70, 165, 80) if idx else (255, 120, 30)
             cv2.circle(canvas, (px, py), 5, color, -1, cv2.LINE_AA)
             cv2.putText(canvas, str(idx + 1), (px + 5, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.34, color, 1, cv2.LINE_AA)
         if self.planned_pose is not None:
             px, py = self._project(float(self.planned_pose.x), float(self.planned_pose.z), bounds, rect)
-            cv2.drawMarker(canvas, (px, py), (220, 80, 20), cv2.MARKER_CROSS, 14, 2, cv2.LINE_AA)
-        for event in self.memory_events[-60:]:
+            cv2.drawMarker(canvas, (px, py), (220, 80, 20), cv2.MARKER_CROSS, 16, 2, cv2.LINE_AA)
+            cv2.putText(canvas, "planned", (px + 8, py + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (180, 70, 20), 1, cv2.LINE_AA)
+        for event in self._memory_events_for_map():
             xz = _event_xz(event)
             if not xz:
                 continue
             px, py = self._project(xz[0], xz[1], bounds, rect)
-            color = (255, 160, 50) if event.get("observation_phase") in {"pre_move", "post_move"} else (220, 190, 70)
+            color = (40, 80, 220) if event.get("event") == "negative_feedback" else (255, 160, 50)
             cv2.circle(canvas, (px, py), 3, color, -1, cv2.LINE_AA)
-        cv2.putText(canvas, "2D search map", (rx + 10, ry + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (75, 85, 100), 1, cv2.LINE_AA)
+        status = "geometry loaded" if self.geometry_loaded else "geometry unavailable"
+        cv2.putText(canvas, f"2D map | {status}", (rx + 10, ry + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (70, 82, 98), 1, cv2.LINE_AA)
 
-    def _draw_detection_boxes(self, image: np.ndarray) -> np.ndarray:
+    def _draw_detection_boxes(self, image: np.ndarray, detections: Sequence[Dict[str, Any]]) -> np.ndarray:
+        if image is None or getattr(image, "size", 0) == 0:
+            return np.zeros((480, 640, 3), dtype=np.uint8)
         out = image.copy()
         h, w = out.shape[:2]
-        for det in self.detections[:20]:
+        for det in detections[:20]:
             bbox = det.get("bbox_xyxy")
             if not isinstance(bbox, list) or len(bbox) < 4:
                 continue
@@ -332,46 +479,125 @@ class SearchVideoRecorder:
             x1 = int(max(0, min(w - 1, _safe_float(bbox[2]))))
             y1 = int(max(0, min(h - 1, _safe_float(bbox[3]))))
             cv2.rectangle(out, (x0, y0), (x1, y1), (70, 220, 255), 1)
-            cv2.putText(out, str(det.get("label", ""))[:24], (x0, max(14, y0 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (70, 220, 255), 1, cv2.LINE_AA)
+            cv2.putText(out, _short(det.get("label", ""), 24), (x0, max(14, y0 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (70, 220, 255), 1, cv2.LINE_AA)
         return out
 
+    def _draw_visual_panel(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
+        rx, ry, rw, rh = rect
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (12, 15, 20), -1)
+        if "OBSERVE" in self.phase and self.include_observation_views:
+            source_phase = self.phase.replace("_SUMMARY", "")
+            views = self.observation_views.get((source_phase, int(self.round_index or 0)), {})
+            items = [views[k] for k in sorted(views)]
+            if items:
+                cols = 2 if len(items) <= 4 else int(math.ceil(math.sqrt(len(items))))
+                rows = int(math.ceil(len(items) / cols))
+                gap = 8
+                cell_w = max(1, (rw - gap * (cols - 1)) // cols)
+                cell_h = max(1, (rh - gap * (rows - 1)) // rows)
+                for idx, item in enumerate(items):
+                    cx = rx + (idx % cols) * (cell_w + gap)
+                    cy = ry + (idx // cols) * (cell_h + gap)
+                    img = self._draw_detection_boxes(item.get("rgb"), item.get("detections", []))
+                    canvas[cy : cy + cell_h, cx : cx + cell_w] = self._fit(img, cell_w, cell_h)
+                    pose = item.get("pose")
+                    yaw = getattr(pose, "yaw", "")
+                    label = f"view={item.get('view_index')} yaw={_fmt(yaw, 1)} det={len(item.get('detections', []))}"
+                    cv2.rectangle(canvas, (cx, cy), (cx + min(cell_w, 260), cy + 22), (0, 0, 0), -1)
+                    cv2.putText(canvas, label, (cx + 6, cy + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (245, 250, 255), 1, cv2.LINE_AA)
+                return
+        img = self._draw_detection_boxes(self.last_rgb, self.detections) if self.last_rgb is not None and "OBSERVE" in self.phase else self.last_rgb
+        canvas[ry : ry + rh, rx : rx + rw] = self._fit(img, rw, rh)
+
+    def _draw_planning_panel(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
+        rx, ry, rw, rh = rect
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (26, 31, 39), -1)
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (62, 74, 90), 1)
+        selected = self.selected_candidate or {}
+        lines = [
+            "Planning / Candidates",
+            f"mode={self.planning_info.get('planning_mode', '')} room={self.planning_info.get('selected_room_id', '')}",
+            f"pose={self.planning_info.get('selected_pose_source', '')} switch={self.planning_info.get('room_switch_reason', '')}",
+            f"selected={_short(selected.get('label', ''), 26)} S={_fmt(selected.get('S_final', selected.get('score', '')))} backend={_short(selected.get('sim_backend', ''), 22)}",
+        ]
+        for idx, cand in enumerate(self.candidates[: self.max_candidate_k]):
+            lines.append(
+                f"{idx+1}. {_short(cand.get('label',''),22):22s} S={_fmt(cand.get('S_final', cand.get('score','')))} "
+                f"{_short(cand.get('sim_backend',''),18)} room={_short(cand.get('current_room_id',''),16)}"
+            )
+        self._put_lines(canvas, lines, (rx + 12, ry + 24), scale=0.43, step=23, max_chars=96)
+
+    def _draw_memory_panel(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
+        rx, ry, rw, rh = rect
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (24, 28, 34), -1)
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (62, 74, 90), 1)
+        lines = [
+            "Memory / Feedback",
+            f"events={len(self.memory_events)} feedback={len(self.feedback_events)} history={self.map_history}",
+        ]
+        current_round = self.round_index
+        current_events = [e for e in self.memory_events if e.get("round") == current_round]
+        for event in current_events[-8:]:
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            lines.append(f"{_short(event.get('event'),18)} {_short(event.get('label'),24)} room={_short(details.get('room_id',''),16)}")
+        if not current_events:
+            for event in self.memory_events[-5:]:
+                details = event.get("details") if isinstance(event.get("details"), dict) else {}
+                lines.append(f"{_short(event.get('event'),18)} {_short(event.get('label'),24)} room={_short(details.get('room_id',''),16)}")
+        for event in self.feedback_events[-5:]:
+            lines.append(f"FB {_short(event.get('label',''),24)} {_short(event.get('reason',''),34)}")
+        self._put_lines(canvas, lines, (rx + 12, ry + 24), scale=0.42, step=22, color=(225, 230, 235), max_chars=96)
+
+    def _draw_timeline(self, canvas: np.ndarray, rect: Tuple[int, int, int, int]) -> None:
+        rx, ry, rw, rh = rect
+        cv2.rectangle(canvas, (rx, ry), (rx + rw, ry + rh), (10, 12, 16), -1)
+        phases = ["PRE_OBSERVE", "PLAN", "MOVE", "POST_OBSERVE", "FEEDBACK", "SUMMARY"]
+        active = self.phase.replace("_SUMMARY", "")
+        seg_w = rw // len(phases)
+        for idx, phase in enumerate(phases):
+            x0 = rx + idx * seg_w
+            x1 = rx + (idx + 1) * seg_w - 8
+            color = (70, 130, 220) if phase == active or self.phase.startswith(phase) else (54, 63, 75)
+            cv2.rectangle(canvas, (x0, ry + 16), (x1, ry + rh - 14), color, -1)
+            cv2.putText(canvas, phase, (x0 + 8, ry + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (245, 248, 252), 1, cv2.LINE_AA)
+        cv2.putText(canvas, f"round={self.round_index} frame={self.frame_count}", (rx + 8, ry + rh - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (165, 190, 220), 1, cv2.LINE_AA)
+
     def _write_frame(self, *, repeat: int = 1) -> None:
+        if self.phase not in self.recorded_phases:
+            self.recorded_phases.append(self.phase)
         canvas = np.full((self.height, self.width, 3), (18, 20, 24), dtype=np.uint8)
         header = (
             f"{self.context.get('episode_index', '')}:{self.context.get('subtask_index', '')} "
-            f"{self.context.get('target_object', '')} | phase={self.phase} round={self.round_index}"
+            f"{self.context.get('target_object', '')} | query={self.context.get('query_label', '')} "
+            f"| phase={self.phase} round={self.round_index}"
         )
-        cv2.rectangle(canvas, (0, 0), (self.width, 58), (10, 12, 16), -1)
-        cv2.putText(canvas, header[:110], (20, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (250, 250, 250), 2, cv2.LINE_AA)
-        rgb_panel = self._draw_detection_boxes(self.last_rgb) if self.last_rgb is not None and self.phase in {"PRE_OBSERVE", "POST_OBSERVE"} else self.last_rgb
-        canvas[72:692, 20:1020] = self._fit(rgb_panel, 1000, 620)
-        self._draw_map(canvas, (1040, 72, 540, 350))
-        selected = self.selected_candidate or {}
-        candidate_lines = [
-            "Planning",
-            f"mode: {self.planning_info.get('planning_mode', '')}",
-            f"room: {self.planning_info.get('selected_room_id', '')}",
-            f"pose: {self.planning_info.get('selected_pose_source', '')}",
-            f"selected: {selected.get('label', '')} score={selected.get('S_final', selected.get('score', ''))}",
-        ]
-        for idx, cand in enumerate(self.candidates[: self.max_candidate_k]):
-            candidate_lines.append(f"{idx+1}. {cand.get('label','')} S={cand.get('S_final', cand.get('score',''))} {cand.get('sim_backend','')}")
-        self._put_lines(canvas, candidate_lines, (1048, 456), scale=0.45, step=24)
-        memory_lines = [
-            "Memory / Feedback",
-            f"events: {len(self.memory_events)} feedback: {len(self.feedback_events)}",
-        ]
-        for event in self.memory_events[-8:]:
-            details = event.get("details") if isinstance(event.get("details"), dict) else {}
-            memory_lines.append(f"{event.get('event')} {event.get('label')} {details.get('room_id', '')}")
-        for event in self.feedback_events[-4:]:
-            memory_lines.append(f"FB {event.get('label','')} {event.get('reason','')}")
-        self._put_lines(canvas, memory_lines, (1048, 660), scale=0.42, step=23, color=(225, 230, 235))
+        cv2.rectangle(canvas, (0, 0), (self.width, 64), (10, 12, 16), -1)
+        cv2.putText(canvas, header[:150], (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (250, 250, 250), 2, cv2.LINE_AA)
+        pad = 20
+        timeline_h = 76
+        body_top = 82
+        body_bottom = self.height - timeline_h - 22
+        right_w = max(420, int(self.width * 0.28)) if self.video_layout == "compact" else max(520, int(self.width * 0.34))
+        left_w = self.width - right_w - pad * 3
+        left_h = body_bottom - body_top
+        right_x = pad * 2 + left_w
+        map_h = int(left_h * 0.42)
+        plan_h = int(left_h * 0.28)
+        mem_h = left_h - map_h - plan_h - pad * 2
+        self._draw_visual_panel(canvas, (pad, body_top, left_w, left_h))
+        self._draw_map(canvas, (right_x, body_top, right_w, map_h))
+        self._draw_planning_panel(canvas, (right_x, body_top + map_h + pad, right_w, plan_h))
+        self._draw_memory_panel(canvas, (right_x, body_top + map_h + plan_h + pad * 2, right_w, mem_h))
+        self._draw_timeline(canvas, (pad, self.height - timeline_h - 8, self.width - pad * 2, timeline_h))
         footer = (
             f"layout={self.context.get('layout_id','')} state={self.context.get('state_index','')} "
-            f"frames={self.frame_count} found={self.context.get('found', '')} final_dist={self.context.get('final_dist', '')}"
+            f"found={self.context.get('found', '')} final_dist={self.context.get('final_dist', '')} "
+            f"geometry={'yes' if self.geometry_loaded else 'no'}"
         )
-        cv2.putText(canvas, footer[:140], (20, self.height - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (150, 185, 220), 1, cv2.LINE_AA)
+        cv2.putText(canvas, footer[:160], (20, self.height - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (150, 185, 220), 1, cv2.LINE_AA)
         for _ in range(max(1, int(repeat))):
             self._writer.write(canvas)
+            if self.save_frames:
+                frame_path = self.frames_dir / f"frame_{self.frame_count:06d}_{self.phase}.png"
+                cv2.imwrite(str(frame_path), canvas)
             self.frame_count += 1
